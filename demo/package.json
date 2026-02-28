@@ -10,6 +10,7 @@
     "demo": "node dist/index.js"
   },
   "dependencies": {
+    "@huggingface/tokenizers": "^0.1.2",
     "@webnnjs/webnn-node": "file:../packages/webnn-node"
   },
   "devDependencies": {
