@@ -1,4 +1,5 @@
 node_modules/
+target/
 packages/webnn-node/dist/
 demo/dist/
 packages/webnn-node/native/target/

@@ -8,8 +8,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 const REPO_ID = 'tarekziade/SmolLM-135M-webnn';
-const PROMPT_TEXT = 'Once upon a time';
-const MAX_NEW_TOKENS = 24;
+const PROMPT_TEXT = process.env.DEMO_PROMPT ?? 'Once upon a time';
+const MAX_NEW_TOKENS = Number(process.env.DEMO_MAX_NEW_TOKENS ?? '24');
 
 type KvTensorInfo = {
   name: string;
@@ -62,29 +62,58 @@ function ensureOrtDylibPath(): void {
     return;
   }
 
-  const directCandidates = [
-    '/Users/tarek/Dev/rustnn/target/onnxruntime/onnxruntime-osx-arm64-1.23.2/lib/libonnxruntime.dylib',
-    '/Users/tarek/Dev/rustnn/.venv/lib/python3.11/site-packages/onnxruntime/capi/libonnxruntime.dylib',
-  ];
+  const libraryNames =
+    process.platform === 'darwin'
+      ? ['libonnxruntime.dylib']
+      : process.platform === 'linux'
+      ? ['libonnxruntime.so']
+      : process.platform === 'win32'
+      ? ['onnxruntime.dll']
+      : ['libonnxruntime.dylib', 'libonnxruntime.so', 'onnxruntime.dll'];
 
-  for (const candidate of directCandidates) {
-    if (fs.existsSync(candidate)) {
-      process.env.ORT_DYLIB_PATH = candidate;
-      return;
-    }
-  }
+  const ortLibDirs = (process.env.ORT_LIB_DIR ?? '')
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 
-  const searchRoots = [
-    '/Users/tarek/Dev/rustnn/target/onnxruntime',
-    path.resolve(process.cwd(), '../../rustnn/target/onnxruntime'),
-    path.resolve(process.cwd(), '../../rustnn/.venv/lib'),
-  ];
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+  const commonRoots = [
+    path.resolve(process.cwd(), 'onnxruntime'),
+    path.resolve(process.cwd(), 'onnxruntime/lib'),
+    path.resolve(process.cwd(), 'target/onnxruntime'),
+    path.resolve(process.cwd(), 'target/onnxruntime/lib'),
+    path.resolve(process.cwd(), '../target/onnxruntime'),
+    path.resolve(process.cwd(), '../target/onnxruntime/lib'),
+    path.resolve(process.cwd(), '../../target/onnxruntime'),
+    path.resolve(process.cwd(), '../../target/onnxruntime/lib'),
+    path.resolve(process.cwd(), 'node_modules/onnxruntime-node'),
+    path.resolve(process.cwd(), 'node_modules/onnxruntime-node/bin'),
+    path.resolve(process.cwd(), '../node_modules/onnxruntime-node'),
+    path.resolve(process.cwd(), '../node_modules/onnxruntime-node/bin'),
+    '/usr/local/lib',
+    '/usr/lib',
+    '/opt/homebrew/lib',
+    '/opt/onnxruntime/lib',
+    '/usr/local/onnxruntime/lib',
+    home ? path.join(home, '.local', 'lib') : '',
+  ]
+    .filter((entry) => entry.length > 0)
+    .filter((entry, index, entries) => entries.indexOf(entry) === index);
 
-  for (const root of searchRoots) {
-    const found = findFileRecursive(root, 'libonnxruntime.dylib', 8);
-    if (found) {
-      process.env.ORT_DYLIB_PATH = found;
-      return;
+  const roots = [...ortLibDirs, ...commonRoots];
+
+  for (const root of roots) {
+    for (const libraryName of libraryNames) {
+      const direct = path.join(root, libraryName);
+      if (fs.existsSync(direct)) {
+        process.env.ORT_DYLIB_PATH = direct;
+        return;
+      }
+      const discovered = findFileRecursive(root, libraryName, 8);
+      if (discovered) {
+        process.env.ORT_DYLIB_PATH = discovered;
+        return;
+      }
     }
   }
 }
@@ -337,13 +366,21 @@ function encodedIds(encoded: { ids?: number[]; getIds?: () => number[] }): numbe
 }
 
 async function main(): Promise<void> {
+  if (!Number.isFinite(MAX_NEW_TOKENS) || MAX_NEW_TOKENS <= 0) {
+    throw new Error(
+      `DEMO_MAX_NEW_TOKENS must be a positive number, got: ${String(process.env.DEMO_MAX_NEW_TOKENS)}`
+    );
+  }
+
   installWebNNPolyfill();
   ensureOrtDylibPath();
 
   if (process.env.ORT_DYLIB_PATH) {
     console.log(`Using ORT_DYLIB_PATH=${process.env.ORT_DYLIB_PATH}`);
   } else {
-    console.log('ORT_DYLIB_PATH not found automatically; relying on system loader search path');
+    console.log(
+      'ORT_DYLIB_PATH not found automatically; set ORT_DYLIB_PATH or ORT_LIB_DIR if loading fails'
+    );
   }
 
   const { context, graph, meta, snapshotPath } = await ml.loadModelFromHub(REPO_ID, {
