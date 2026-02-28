@@ -1,0 +1,22 @@
+{
+  "name": "@webnnjs/webnn-node-native",
+  "version": "0.1.0",
+  "description": "napi-rs addon backing @webnnjs/webnn-node",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "index.node",
+    "*.node"
+  ],
+  "scripts": {
+    "build": "napi build --release"
+  },
+  "napi": {
+    "name": "index"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4"
+  }
+}

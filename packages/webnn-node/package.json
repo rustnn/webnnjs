@@ -1,0 +1,27 @@
+{
+  "name": "@webnnjs/webnn-node",
+  "version": "0.1.0",
+  "description": "WebNN-flavor API for Node.js backed by rustnn + ONNX Runtime",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "npm run build:native && tsc -p tsconfig.build.json",
+    "build:native": "npm --prefix native run build"
+  },
+  "dependencies": {
+    "@huggingface/hub": "^2.7.0",
+    "@webnnjs/webnn-node-native": "file:./native"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2"
+  }
+}

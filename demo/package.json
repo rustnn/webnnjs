@@ -1,0 +1,18 @@
+{
+  "name": "@webnnjs/demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Demo app for @webnnjs/webnn-node",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "demo": "node dist/index.js"
+  },
+  "dependencies": {
+    "@webnnjs/webnn-node": "file:../packages/webnn-node"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2"
+  }
+}

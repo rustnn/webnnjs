@@ -1,0 +1,6 @@
+node_modules/
+packages/webnn-node/dist/
+demo/dist/
+packages/webnn-node/native/target/
+packages/webnn-node/native/*.node
+npm-debug.log*
