@@ -313,6 +313,12 @@ pub fn constant_from_buffer(
                 .constant_from_slice(&operand_desc, &values)
                 .map_err(|e| op_err("constant", e))?
         }
+        "int4" | "uint4" => {
+            builder
+                .builder
+                .constant_from_slice(&operand_desc, data)
+                .map_err(|e| op_err("constant", e))?
+        }
         other => {
             return Err(nerr(
                 Status::InvalidArg,
@@ -325,15 +331,5 @@ pub fn constant_from_buffer(
 }
 
 pub fn ml_operand_dtype_to_string(dtype: MLOperandDataType) -> String {
-    match dtype {
-        MLOperandDataType::Float32 => "float32",
-        MLOperandDataType::Float16 => "float16",
-        MLOperandDataType::Int32 => "int32",
-        MLOperandDataType::Uint32 => "uint32",
-        MLOperandDataType::Int64 => "int64",
-        MLOperandDataType::Uint64 => "uint64",
-        MLOperandDataType::Int8 => "int8",
-        MLOperandDataType::Uint8 => "uint8",
-    }
-    .to_string()
+    dtype.as_str().to_string()
 }

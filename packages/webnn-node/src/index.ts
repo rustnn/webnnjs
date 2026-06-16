@@ -22,7 +22,9 @@ export type MLOperandDataType =
   | 'int64'
   | 'uint64'
   | 'int8'
-  | 'uint8';
+  | 'uint8'
+  | 'int4'
+  | 'uint4';
 
 export interface MLOperandDescriptor {
   dataType: MLOperandDataType;
@@ -161,6 +163,8 @@ function typedArrayFromBuffer(
     case 'int8':
       return new Int8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     case 'uint8':
+    case 'int4':
+    case 'uint4':
       return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     default:
       throw new TypeError(`unsupported readTensor dataType: ${dataType}`);

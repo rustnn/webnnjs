@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { ml } from '@webnnjs/webnn-node';
 
 import { executeGraphResources } from './execute-graph.mjs';
-import { extractTestsFromSource } from './extract-tests.mjs';
+import { loadWptConformanceFile } from './load-wpt-file.mjs';
 import { ensureOrtDylibPath } from './ort-env.mjs';
 import { assertOutputClose, normalizeOpName } from './tolerance.mjs';
 
@@ -22,7 +22,9 @@ const SUPPORTED_DTYPES = new Set([
   'int32',
   'uint32',
   'int64',
-  'uint64'
+  'uint64',
+  'int4',
+  'uint4'
 ]);
 
 const UNIMPLEMENTED_OPS = new Set();
@@ -116,7 +118,7 @@ function shouldSkipTest(test) {
   return null;
 }
 
-async function runSingleTest(context, test, testName) {
+async function runSingleTest(context, test, testName, resolveTolerance) {
   const graph = test.graph;
   const skipReason = shouldSkipTest(test);
   if (skipReason) {
@@ -135,6 +137,8 @@ async function runSingleTest(context, test, testName) {
     assertOutputClose({
       operatorName: lastOp,
       graphOperatorNames,
+      graph,
+      getTolerance: resolveTolerance,
       outputName: name,
       expected,
       actual
@@ -206,11 +210,18 @@ async function main() {
       report.files.push(fileReport);
 
       let tests = [];
+      let resolveTolerance = null;
       try {
         const source = await readFile(file, 'utf8');
-        tests = extractTestsFromSource(source, fileName).slice(0, opts.limitTests);
+        const loaded = loadWptConformanceFile(source, fileName, {
+          utilsPath: path.join(opts.wptDir, 'webnn', 'resources', 'utils.js')
+        });
+        tests = loaded.tests.slice(0, opts.limitTests);
+        resolveTolerance = loaded.resolveTolerance;
       } catch (err) {
-        const skipReason = err.message.includes('No <name>Tests array');
+        const skipReason =
+          err.message.includes('No webnn_conformance_test') ||
+          err.message.includes('No <name>Tests array');
         if (skipReason) {
           skipped += 1;
           fileReport.summary.skipped += 1;
@@ -243,7 +254,7 @@ async function main() {
         }
 
         try {
-          const res = await runSingleTest(context, test, testName);
+          const res = await runSingleTest(context, test, testName, resolveTolerance);
           const durationMs = Date.now() - started;
           if (res.status === 'skip') {
             skipped += 1;

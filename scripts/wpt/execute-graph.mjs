@@ -118,6 +118,12 @@ function buildMethodArgs(opName, wptArguments, operandMap, operandNames) {
 }
 
 function typedArrayToPlainData(typed, dataType) {
+  if (dataType === 'int4') {
+    return Array.from(new Int8Array(typed.buffer, typed.byteOffset, typed.byteLength), (v) => v);
+  }
+  if (dataType === 'uint4') {
+    return Array.from(typed);
+  }
   if (dataType === 'uint64') {
     return Array.from(typed, (v) => (typeof v === 'bigint' ? v : BigInt(v)).toString());
   }
@@ -139,10 +145,11 @@ function typedArrayCtor(dataType) {
     case 'int8':
       return Int8Array;
     case 'uint8':
+      return Uint8Array;
     case 'uint4':
+    case 'int4':
       return Uint8Array;
     case 'int32':
-    case 'int4':
       return Int32Array;
     case 'uint32':
       return Uint32Array;
@@ -276,7 +283,7 @@ export async function executeGraphResources(context, graphResources) {
       } catch (err) {
         const buffer = Buffer.from(await context.readTensor(tensor));
         const Ctor = typedArrayCtor(expected.descriptor.dataType);
-        const typed = new Ctor(buffer.buffer, buffer.byteOffset, buffer.byteLength / Ctor.BYTES_PER_ELEMENT);
+        const typed = new Ctor(buffer.buffer, buffer.byteOffset, buffer.byteLength);
         data = typedArrayToPlainData(typed, expected.descriptor.dataType);
       }
       outputs[name] = {

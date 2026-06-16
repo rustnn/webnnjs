@@ -146,6 +146,8 @@ pub(crate) fn parse_data_type(raw: &str) -> Result<MLOperandDataType> {
         "uint64" => Ok(MLOperandDataType::Uint64),
         "int8" => Ok(MLOperandDataType::Int8),
         "uint8" => Ok(MLOperandDataType::Uint8),
+        "int4" => Ok(MLOperandDataType::Int4),
+        "uint4" => Ok(MLOperandDataType::Uint4),
         other => Err(nerr(
             Status::InvalidArg,
             format!("unsupported dataType '{other}'"),
@@ -483,6 +485,23 @@ fn write_tensor_bytes(context: &mut MLContext, tensor: &MLTensor, data: &[u8]) -
                 .write_tensor(tensor, &values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("writeTensor failed: {e}")))
         }
+        MLOperandDataType::Int4 | MLOperandDataType::Uint4 => {
+            let required = tensor.rustnn_required_bytes();
+            if data.len() != required {
+                return Err(nerr(
+                    Status::InvalidArg,
+                    format!(
+                        "writeTensor buffer length {} does not match required {} for {}",
+                        data.len(),
+                        required,
+                        tensor.data_type().as_str()
+                    ),
+                ));
+            }
+            context
+                .write_tensor(tensor, data)
+                .map_err(|e| nerr(Status::GenericFailure, format!("writeTensor failed: {e}")))
+        }
     }
 }
 
@@ -537,6 +556,13 @@ fn read_tensor_bytes(context: &mut MLContext, tensor: &MLTensor) -> Result<Vec<u
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
             return Ok(values);
+        }
+        MLOperandDataType::Int4 | MLOperandDataType::Uint4 => {
+            let mut values = vec![0u8; logical];
+            context
+                .read_tensor(tensor, &mut values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
+            Ok(values)
         }
         MLOperandDataType::Float16 => {
             let mut values = vec![0u16; logical / 2];

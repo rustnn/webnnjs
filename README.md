@@ -193,7 +193,7 @@ Common options (pass after `--`):
 | `--stop-on-fail` | Stop at first failure |
 | `--report-json PATH` | Write JSON report |
 
-`int4` and `uint4` tests are skipped until supported. Float16 WPT tests require `Float16Array` (Node 24+ by default, or Node 22 with `--js-float16array`).
+Float16 WPT tests require `Float16Array` (Node 24+ by default, or Node 22 with `--js-float16array`).
 
 Set `ORT_DYLIB_PATH` (or `demo/.env`) before running; the harness searches common ORT locations if unset.
 

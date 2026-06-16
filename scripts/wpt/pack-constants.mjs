@@ -55,7 +55,8 @@ function parseNumericLoose(v) {
 }
 
 /**
- * Pack WPT tensor values to a typed array for MLGraphBuilder.constant().
+ * Pack WPT tensor values to a typed array for MLGraphBuilder.constant() / writeTensor().
+ * rustnn convention: int4/uint4 use one logical value per byte (not WPT browser nibble packing).
  * @param {{ descriptor: { dataType: string, shape: number[] }, data?: unknown }} input
  * @returns {ArrayBufferView}
  */

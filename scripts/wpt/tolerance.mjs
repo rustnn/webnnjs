@@ -126,9 +126,46 @@ function isScalarFillExpected(expectedData, shape) {
   return expectedData.length === 1 && shapeElementCount(shape) > 1;
 }
 
+const INTEGER_DTYPES = new Set([
+  'int4',
+  'uint4',
+  'int8',
+  'uint8',
+  'int32',
+  'uint32'
+]);
+
+/**
+ * Resolve per-graph tolerance the same way WPT does in assertResultsEquals:
+ * toleranceFunc(graphResources) → { metricType: 'ULP' | 'ATOL', value }.
+ * For integer outputs, WPT "ULP" means absolute difference.
+ * @param {object | null | undefined} getTolerance
+ * @param {object | null | undefined} graph
+ * @returns {{ metricType: 'ULP' | 'ATOL', value: number } | null}
+ */
+function resolveWptTolerance(getTolerance, graph) {
+  if (typeof getTolerance !== 'function' || !graph) {
+    return null;
+  }
+  try {
+    const info = getTolerance(graph, {});
+    if (!info || typeof info.value !== 'number') {
+      return null;
+    }
+    if (info.metricType !== 'ULP' && info.metricType !== 'ATOL') {
+      return null;
+    }
+    return { metricType: info.metricType, value: info.value };
+  } catch {
+    return null;
+  }
+}
+
 export function assertOutputClose({
   operatorName,
   graphOperatorNames,
+  graph,
+  getTolerance,
   outputName,
   expected,
   actual
@@ -156,6 +193,28 @@ export function assertOutputClose({
   const scalarFill = isScalarFillExpected(expectedData, expected.descriptor.shape);
   const compareLength = scalarFill ? actualData.length : expectedData.length;
 
+  if (INTEGER_DTYPES.has(dataType)) {
+    const wptTolerance = resolveWptTolerance(getTolerance, graph);
+    const intTol =
+      wptTolerance?.metricType === 'ULP'
+        ? wptTolerance.value
+        : wptTolerance?.metricType === 'ATOL'
+          ? wptTolerance.value
+          : 0;
+    const scalar = scalarFill ? Number(expectedData[0]) : null;
+    for (let i = 0; i < compareLength; i += 1) {
+      const a = Number(actualData[i]);
+      const e = scalar ?? Number(expectedData[i]);
+      if (Math.abs(a - e) > intTol) {
+        throw new Error(
+          `value mismatch for ${outputName}[${i}]: expected ${e}, got ${a}` +
+            (intTol > 0 ? ` (tolerance ±${intTol})` : '')
+        );
+      }
+    }
+    return;
+  }
+
   if (dataType === 'int64' || dataType === 'uint64') {
     const scalar = scalarFill ? BigInt(expectedData[0]) : null;
     for (let i = 0; i < compareLength; i += 1) {
@@ -168,8 +227,21 @@ export function assertOutputClose({
     return;
   }
 
-  let { ulpTol, absTol } = mergedFloatTolerance(operatorName, graphOperatorNames, dataType);
-  if (dataType === 'float16' && ulpTol === 0) ulpTol = 4;
+  const wptTolerance = resolveWptTolerance(getTolerance, graph);
+  let ulpTol;
+  let absTol;
+  let wptUlpOnly = false;
+  if (wptTolerance?.metricType === 'ULP') {
+    ulpTol = wptTolerance.value;
+    absTol = 0;
+    wptUlpOnly = true;
+  } else if (wptTolerance?.metricType === 'ATOL') {
+    ulpTol = Number.POSITIVE_INFINITY;
+    absTol = wptTolerance.value;
+  } else {
+    ({ ulpTol, absTol } = mergedFloatTolerance(operatorName, graphOperatorNames, dataType));
+    if (dataType === 'float16' && ulpTol === 0) ulpTol = 4;
+  }
 
   let f32BitScratch;
   let f16BitScratch;
@@ -203,7 +275,19 @@ export function assertOutputClose({
       ulp = ulpDistanceF32(a, e, f32BitScratch);
     }
 
-    if (absDiff > absTol && ulp > ulpTol) {
+    if (wptUlpOnly) {
+      if (ulp > ulpTol) {
+        throw new Error(
+          `value mismatch for ${outputName}[${i}]: expected ${e}, got ${a}, absDiff=${absDiff}, ulp=${ulp}, ulpTol=${ulpTol}`
+        );
+      }
+    } else if (wptTolerance?.metricType === 'ATOL') {
+      if (absDiff > absTol) {
+        throw new Error(
+          `value mismatch for ${outputName}[${i}]: expected ${e}, got ${a}, absDiff=${absDiff}, absTol=${absTol}`
+        );
+      }
+    } else if (absDiff > absTol && ulp > ulpTol) {
       throw new Error(
         `value mismatch for ${outputName}[${i}]: expected ${e}, got ${a}, absDiff=${absDiff}, ulp=${ulp}, ulpTol=${ulpTol}`
       );
