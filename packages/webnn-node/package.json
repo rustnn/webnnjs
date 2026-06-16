@@ -14,7 +14,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "npm run build:native && tsc -p tsconfig.build.json",
+    "generate": "node scripts/generate-builder-api.mjs",
+    "build": "npm run generate && npm run build:native && tsc -p tsconfig.build.json",
     "build:native": "npm --prefix native run build"
   },
   "dependencies": {

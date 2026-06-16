@@ -9,11 +9,19 @@ export interface NativeModelLoadResult {
 }
 export declare function createContext(optionsJson: string): number
 export declare function destroyContext(contextHandle: number): void
+export declare function contextAccelerated(contextHandle: number): boolean
+export declare function createGraphBuilder(contextHandle: number): number
+export declare function destroyGraphBuilder(builderHandle: number): void
+export declare function builderInput(builderHandle: number, name: string, descriptorJson: string): number
+export declare function builderInvoke(builderHandle: number, invokeJson: string): string
+export declare function builderConstantBuffer(builderHandle: number, descriptorJson: string, data: Buffer): string
+export declare function builderBuild(contextHandle: number, builderHandle: number, outputsJson: string): Promise<number>
 export declare function createTensor(contextHandle: number, descriptorJson: string): number
 export declare function destroyTensor(contextHandle: number, tensorHandle: number): void
 export declare function writeTensor(contextHandle: number, tensorHandle: number, data: Buffer): void
 export declare function readTensor(contextHandle: number, tensorHandle: number): Buffer
-export declare function compileGraph(contextHandle: number, graphJson: string): Promise<number>
-export declare function loadWebnnModel(contextHandle: number, pathOrDir: string, optionsJson: string): Promise<NativeModelLoadResult>
-export declare function dispatch(contextHandle: number, graphHandle: number, inputsJson: string, outputsJson: string): Promise<void>
+export declare function rustnnResizeTensor(contextHandle: number, tensorHandle: number, shapeJson: string): void
+export declare function rustnnSetTensorCapacity(contextHandle: number, tensorHandle: number, shapeJson: string): void
+export declare function dispatch(contextHandle: number, graphHandle: number, inputsJson: string, outputsJson: string): void
 export declare function destroyGraph(contextHandle: number, graphHandle: number): void
+export declare function loadWebnnModel(contextHandle: number, pathOrDir: string): Promise<NativeModelLoadResult>

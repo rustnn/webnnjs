@@ -11,6 +11,8 @@
   "scripts": {
     "build": "npm --prefix packages/webnn-node/native run build && npm --prefix packages/webnn-node run build && npm --prefix demo run build",
     "demo": "npm run build && npm --prefix demo run demo",
+    "demo:builder": "npm run build && npm --prefix demo run demo:builder",
+    "demo:run": "npm --prefix demo run demo",
     "clean": "rm -rf packages/webnn-node/dist demo/dist"
   },
   "devDependencies": {

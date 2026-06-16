@@ -1,126 +1,173 @@
 # webnnjs
 
-Node.js WebNN-flavor polyfill API backed by `rustnn` and ONNX Runtime via a Rust napi-rs addon.
+Node.js WebNN-flavor API backed by `rustnn` and ONNX Runtime via a Rust napi-rs addon.
 
-This is a Node polyfill (not a browser implementation). It keeps WebNN naming close to the W3C WebNN API, with Node-only helpers for model loading.
+This is a Node polyfill (not a browser implementation). The public API follows the [W3C WebNN IDL](https://www.w3.org/TR/webnn/), with Node-only helpers for Hub model loading.
 
 ## Layout
 
-- `packages/webnn-node/` - TypeScript WebNN-flavor API
-- `packages/webnn-node/native/` - Rust napi-rs addon (`rustnn` + ONNX Runtime)
-- `demo/` - Demo app that downloads and runs a WebNN model from Hugging Face Hub
+- `packages/webnn-node/` — TypeScript WebNN API (`MLContext`, `MLGraphBuilder`, …)
+- `packages/webnn-node/native/` — Rust napi-rs addon
+- `packages/webnn-node/idl/webnn.idl` — WPT IDL snapshot used to codegen builder ops
+- `demo/` — Runnable examples
 
 ## Prerequisites
 
 - Node.js `>= 20`
 - Rust toolchain (`cargo`, `rustc`)
-- Build toolchain for native addons (C/C++ compiler, linker, Python if required by your platform)
+- Native build toolchain (C/C++ compiler, linker)
+- ONNX Runtime shared library (see below)
+- Local [`rustnn`](https://github.com/rustnn/rustnn) checkout at `../rustnn` relative to this repo (see `packages/webnn-node/native/Cargo.toml`)
 
-## rustnn dependency
+## ONNX Runtime
 
-The native addon depends on upstream `rustnn` from GitHub (configured in `packages/webnn-node/native/Cargo.toml`):
+`rustnn` loads ONNX Runtime dynamically. Point it at your ORT shared library:
 
-- `https://github.com/rustnn/rustnn` (`branch = "main"`)
+| Platform | Example |
+|----------|---------|
+| Windows | `ORT_DYLIB_PATH=C:\path\to\onnxruntime.dll` |
+| Linux | `ORT_DYLIB_PATH=/path/to/libonnxruntime.so` |
+| macOS | `ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib` |
 
-If you want to test with a local `rustnn` checkout, change that dependency to a local `path` in `Cargo.toml`.
+Alternatively, set `ORT_LIB_DIR` to a directory that contains the library.
 
-## ONNX Runtime shared library
+Both demos read `demo/.env` via `node --env-file=.env`. Copy or edit that file for your machine:
 
-`rustnn` uses ONNX Runtime dynamic loading (`ort` with `load-dynamic`). You need ONNX Runtime shared libraries installed and discoverable.
-
-Preferred setup:
-
-1. Install ONNX Runtime shared library for your platform.
-2. Set one of:
-   - `ORT_DYLIB_PATH` to the exact ORT library file.
-   - `ORT_LIB_DIR` to a directory containing ORT libs.
-
-Examples:
-
-```bash
-# macOS
-export ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib
-
-# Linux
-export ORT_DYLIB_PATH=/path/to/libonnxruntime.so
-
-# Windows (PowerShell)
-$env:ORT_DYLIB_PATH="C:\path\to\onnxruntime.dll"
+```env
+ORT_DYLIB_PATH=C:\git\rustnn-workspace\onnxruntime.dll
 ```
 
-The demo also tries common install locations automatically; explicit env vars are still the most reliable.
+The demo code also searches common install locations if the variable is unset, but an explicit path is most reliable.
 
-## Install and Build
+## Build
+
+From the repo root:
 
 ```bash
 npm install
 npm run build
 ```
 
-Equivalent Makefile flow:
+This runs, in order:
+
+1. **Native addon** (`packages/webnn-node/native`) — `cargo build --release`, then `scripts/install-addon.mjs` copies the release cdylib to `index.node`
+2. **webnn-node** — regenerates `MLGraphBuilder` methods from `webnn.idl`, compiles TypeScript
+3. **demo** — compiles demo TypeScript
+
+Build individual packages:
 
 ```bash
-make install
-make build
+# Native only
+npm run build -w @webnnjs/webnn-node-native
+
+# TypeScript package (includes native)
+npm --prefix packages/webnn-node run build
+
+# Demo only (requires webnn-node built first)
+npm --prefix demo run build
 ```
 
-## Run Demo
+### Native addon staging
+
+The copy to `index.node` happens in `scripts/install-addon.mjs` after `cargo build`, not in `build.rs` (`build.rs` only runs `napi_build::setup()` before linking).
+
+If `index.node` is locked on Windows (a Node process still running), the install script stages `index.staged.node` instead. Close Node processes, then:
+
+```bash
+npm run install-addon -w @webnnjs/webnn-node-native
+```
+
+`index.js` loads the newest `*.node` file in the native package directory.
+
+Optional: `npm run build:napi -w @webnnjs/webnn-node-native` uses `@napi-rs/cli` instead (also regenerates `index.d.ts` from `#[napi]` exports).
+
+## Run demos
+
+Demos require a successful build and a valid `ORT_DYLIB_PATH` in `demo/.env` (or auto-discovered ORT).
+
+### 1. MLGraphBuilder `add` example
+
+Builds a 2×2 float32 `add` graph in TypeScript, executes it, and prints element-wise sums.
+
+```bash
+npm run demo:builder
+```
+
+Skip the rebuild if already built:
+
+```bash
+npm --prefix demo run demo:builder
+```
+
+Expected output:
+
+```
+Input A: [ 1, 2, 3, 4 ]
+Input B: [ 5, 6, 7, 8 ]
+A + B =   [ 6, 8, 10, 12 ]
+```
+
+Source: [`demo/src/builder-add.ts`](demo/src/builder-add.ts)
+
+### 2. SmolLM text generation (Hugging Face Hub)
+
+Downloads `tarekziade/SmolLM-135M-webnn`, loads the WebNN graph via `MLContext`, and runs autoregressive generation.
 
 ```bash
 npm run demo
 ```
 
-Makefile flow (downloads ORT like rustnn then runs demo with env vars):
+Skip the rebuild:
 
 ```bash
-make demo
+npm run demo:run
 ```
 
-Optional demo overrides:
+Optional overrides:
 
 ```bash
-DEMO_PROMPT="The future of AI is" DEMO_MAX_NEW_TOKENS=32 npm run demo
+DEMO_PROMPT="The future of AI is" DEMO_MAX_NEW_TOKENS=32 npm run demo:run
 ```
 
-With `make`:
+Source: [`demo/src/index.ts`](demo/src/index.ts)
+
+## Makefile (optional)
+
+On Unix, `make` can download ONNX Runtime and run the SmolLM demo with env vars set:
 
 ```bash
-DEMO_PROMPT="The future of AI is" DEMO_MAX_NEW_TOKENS=32 make demo
+make install
+make build
+make demo              # download ORT + build + run SmolLM demo
+make demo-only         # run SmolLM demo (already built)
+make onnxruntime-download
+make clean
 ```
 
-Demo behavior:
+There is no `make` target for `demo:builder` yet; use `npm run demo:builder`.
 
-1. Downloads/caches `tarekziade/SmolLM-135M-webnn` via `@huggingface/hub` `snapshotDownload`.
-2. Loads WebNN graph files from the snapshot directory.
-3. Uses `rustnn` to parse/validate/lower to ONNX.
-4. Executes with ONNX Runtime backend.
-5. Performs autoregressive generation and prints generated text.
+## API overview
 
-## Makefile Targets
+Polyfill entry:
 
-This repo now includes a Makefile patterned after rustnn's ORT setup logic:
-
-- `make onnxruntime-download` downloads the platform-specific ONNX Runtime package into `target/onnxruntime`.
-- `make demo` injects `ORT_DYLIB_PATH` (and `LD_LIBRARY_PATH` on Linux) before running the demo.
-- `make demo-only` runs the already-built demo with the same ORT env setup.
-- `make clean` removes build artifacts and downloaded ORT files.
-
-## API Surface (MVP)
-
-- `installWebNNPolyfill()` attaches `navigator.ml` on `globalThis`
+- `installWebNNPolyfill()` — attaches `navigator.ml`
 - `ml.createContext(options)`
-- `new MLGraphBuilder(context)`
-- `builder.input(name, descriptor)`
-- `builder.constant(descriptor, data)`
-- `builder.add(a, b)`
-- `builder.mul(a, b)`
-- `builder.build(outputs)`
-- `context.createTensor(descriptor)`
-- `context.writeTensor(tensor, data)`
-- `context.dispatch(graph, inputs, outputs)`
-- `context.readTensor(tensor)`
-- `graph.destroy()`
+- `ml.loadModelFromHub(repoId, options)` — Node-only Hub download helper
 
-Node-only helper:
+WebNN IDL types:
 
-- `ml.loadModelFromHub(repoId, options)`
+- `MLContext` — `createTensor`, `writeTensor`, `readTensor`, `dispatch`
+- `MLGraphBuilder` — full IDL operator set (codegen from `webnn.idl`), plus `input`, `constant`, `build`
+- `MLGraph`, `MLTensor`, `MLOperand`
+
+Rustnn extensions on `MLContext`:
+
+- `rustnnResizeTensor`, `rustnnSetTensorCapacity` — dynamic shapes for dispatch
+
+Some IDL ops are not implemented in rustnn yet (`gru`, `lstm`, `scatterElements`, etc.) and throw at runtime.
+
+Regenerate builder bindings after IDL changes:
+
+```bash
+npm run generate -w @webnnjs/webnn-node
+```

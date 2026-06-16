@@ -11,7 +11,9 @@
     "*.node"
   ],
   "scripts": {
-    "build": "napi build --release"
+    "build": "cargo build --release && node scripts/install-addon.mjs",
+    "build:napi": "napi build --release",
+    "install-addon": "node scripts/install-addon.mjs"
   },
   "napi": {
     "name": "index"

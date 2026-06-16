@@ -1,92 +1,47 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use napi::bindgen_prelude::Buffer;
 use napi::{Error, Result, Status};
 use napi_derive::napi;
 use once_cell::sync::Lazy;
-use prost::Message;
-use rustnn::graph::{get_static_or_max_size, DataType, OperandDescriptor};
-use rustnn::protos::onnx::ModelProto;
-use rustnn::{
-    load_graph_from_path, run_onnx_with_inputs, ContextProperties, ConverterRegistry, GraphInfo,
-    GraphValidator, OnnxInput, TensorData,
+use rustnn::graph::{get_static_or_max_size, DataType, GraphInfo};
+use rustnn::loader::load_graph_from_path;
+use rustnn::mlcontext::{
+    MLContext, MLContextOptions, MLGraph, MLGraphBuilder, MLOperand, MLOperandDescriptor,
+    MLPowerPreference, MLTensor, MLTensorDescriptor,
 };
+use rustnn::operator_enums::MLOperandDataType;
+use rustnn::validator::{ContextProperties, GraphValidator, ValidationArtifacts};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
+mod builder_dispatch;
+mod generated;
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct ContextOptions {
-    device_type: Option<String>,
+struct ContextOptionsWire {
+    power_preference: Option<String>,
+    accelerated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TensorDescriptorWire {
+pub(crate) struct TensorDescriptorWire {
+    data_type: String,
+    shape: Vec<u64>,
+    readable: Option<bool>,
+    writable: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LoadTensorMeta {
     data_type: String,
     shape: Vec<usize>,
-}
-
-#[derive(Debug, Clone)]
-struct TensorState {
-    context_handle: u32,
-    descriptor: TensorDescriptorWire,
-    data: Vec<f32>,
-}
-
-#[derive(Debug, Clone)]
-struct ContextState {
-    _options: ContextOptions,
-    warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-struct GraphState {
-    context_handle: u32,
-    onnx_bytes: Arc<Vec<u8>>,
-    input_order: Vec<String>,
-    output_order: Vec<String>,
-    input_types: HashMap<String, String>,
-    output_types: HashMap<String, String>,
-    input_shapes: HashMap<String, Vec<usize>>,
-    output_shapes: HashMap<String, Vec<usize>>,
-}
-
-#[derive(Debug, Default)]
-struct NativeState {
-    next_context_handle: u32,
-    next_graph_handle: u32,
-    next_tensor_handle: u32,
-    contexts: HashMap<u32, ContextState>,
-    graphs: HashMap<u32, GraphState>,
-    tensors: HashMap<u32, TensorState>,
-}
-
-impl NativeState {
-    fn new() -> Self {
-        Self {
-            next_context_handle: 1,
-            next_graph_handle: 1,
-            next_tensor_handle: 1,
-            ..Self::default()
-        }
-    }
-}
-
-static STATE: Lazy<Mutex<NativeState>> = Lazy::new(|| Mutex::new(NativeState::new()));
-
-#[derive(Debug, Clone)]
-struct CompiledGraph {
-    onnx_bytes: Arc<Vec<u8>>,
-    input_order: Vec<String>,
-    output_order: Vec<String>,
-    input_types: HashMap<String, String>,
-    output_types: HashMap<String, String>,
-    input_shapes: HashMap<String, Vec<usize>>,
-    output_shapes: HashMap<String, Vec<usize>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,14 +52,6 @@ struct LoadMeta {
     output_names: Vec<String>,
     inputs: HashMap<String, LoadTensorMeta>,
     outputs: HashMap<String, LoadTensorMeta>,
-    warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LoadTensorMeta {
-    data_type: String,
-    shape: Vec<usize>,
 }
 
 #[napi(object)]
@@ -113,11 +60,64 @@ pub struct NativeModelLoadResult {
     pub meta_json: String,
 }
 
+struct GraphEntry {
+    graph: MLGraph<'static>,
+    input_names: Vec<String>,
+    output_names: Vec<String>,
+    inputs: HashMap<String, LoadTensorMeta>,
+    outputs: HashMap<String, LoadTensorMeta>,
+}
+
+pub(crate) struct BuilderEntry {
+    builder: MLGraphBuilder<'static, 'static>,
+    operands: HashMap<u32, (MLOperand, OperandWireMeta)>,
+    next_operand_handle: u32,
+    next_rustnn_operand_id: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OperandWireMeta {
+    data_type: String,
+    shape: Vec<u64>,
+    rustnn_id: u32,
+}
+
+struct ContextSession {
+    context: MLContext<'static>,
+    graphs: HashMap<u32, GraphEntry>,
+    tensors: HashMap<u32, MLTensor>,
+    builders: HashMap<u32, BuilderEntry>,
+    next_graph_handle: u32,
+    next_tensor_handle: u32,
+    next_builder_handle: u32,
+}
+
+struct Store {
+    next_context_handle: u32,
+    contexts: HashMap<u32, ContextSession>,
+}
+
+impl Store {
+    fn new() -> Self {
+        Self {
+            next_context_handle: 1,
+            contexts: HashMap::new(),
+        }
+    }
+}
+
+// MLContext/MLGraphBuilder use trait objects that are not auto-Send. Node calls into
+// this addon are serialized through the mutex; ORT dispatch stays on the calling thread.
+unsafe impl Send for Store {}
+unsafe impl Sync for Store {}
+
+static STATE: Lazy<Mutex<Store>> = Lazy::new(|| Mutex::new(Store::new()));
+
 fn nerr(status: Status, message: impl Into<String>) -> Error {
     Error::new(status, message.into())
 }
 
-fn lock_state() -> Result<std::sync::MutexGuard<'static, NativeState>> {
+fn lock_store() -> Result<std::sync::MutexGuard<'static, Store>> {
     STATE
         .lock()
         .map_err(|_| nerr(Status::GenericFailure, "native state lock poisoned"))
@@ -128,46 +128,29 @@ fn parse_json<T: DeserializeOwned>(raw: &str, label: &str) -> Result<T> {
         .map_err(|e| nerr(Status::InvalidArg, format!("invalid JSON for {label}: {e}")))
 }
 
-fn checked_element_count(shape: &[usize]) -> Result<usize> {
-    if shape.is_empty() {
-        return Ok(1);
+fn parse_power_preference(raw: Option<&str>) -> MLPowerPreference {
+    match raw.unwrap_or("default") {
+        "high-performance" => MLPowerPreference::HighPerformance,
+        "low-power" => MLPowerPreference::LowPower,
+        _ => MLPowerPreference::Default,
     }
-    let mut total = 1usize;
-    for dim in shape {
-        total = total.checked_mul(*dim).ok_or_else(|| {
-            nerr(
-                Status::InvalidArg,
-                format!("shape element count overflow for shape {shape:?}"),
-            )
-        })?;
-    }
-    Ok(total)
 }
 
-fn bytes_to_f32(input: &[u8]) -> Result<Vec<f32>> {
-    if input.len() % 4 != 0 {
-        return Err(nerr(
+pub(crate) fn parse_data_type(raw: &str) -> Result<MLOperandDataType> {
+    match raw {
+        "float32" => Ok(MLOperandDataType::Float32),
+        "float16" => Ok(MLOperandDataType::Float16),
+        "int32" => Ok(MLOperandDataType::Int32),
+        "uint32" => Ok(MLOperandDataType::Uint32),
+        "int64" => Ok(MLOperandDataType::Int64),
+        "uint64" => Ok(MLOperandDataType::Uint64),
+        "int8" => Ok(MLOperandDataType::Int8),
+        "uint8" => Ok(MLOperandDataType::Uint8),
+        other => Err(nerr(
             Status::InvalidArg,
-            format!(
-                "buffer length must be divisible by 4 for float32, got {}",
-                input.len()
-            ),
-        ));
+            format!("unsupported dataType '{other}'"),
+        )),
     }
-
-    let mut values = Vec::with_capacity(input.len() / 4);
-    for chunk in input.chunks_exact(4) {
-        values.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-    }
-    Ok(values)
-}
-
-fn f32_to_bytes(input: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(input.len() * 4);
-    for value in input {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    bytes
 }
 
 fn rustnn_dtype_to_string(dtype: DataType) -> String {
@@ -186,78 +169,104 @@ fn rustnn_dtype_to_string(dtype: DataType) -> String {
     .to_string()
 }
 
-fn descriptor_shape(desc: &OperandDescriptor) -> Vec<usize> {
+fn descriptor_shape(desc: &rustnn::graph::OperandDescriptor) -> Vec<usize> {
     desc.shape
         .iter()
         .map(|d| get_static_or_max_size(d) as usize)
         .collect()
 }
 
-fn descriptor_maps(
-    descriptors: &HashMap<String, OperandDescriptor>,
-) -> (HashMap<String, String>, HashMap<String, Vec<usize>>) {
-    let mut types = HashMap::with_capacity(descriptors.len());
-    let mut shapes = HashMap::with_capacity(descriptors.len());
+fn wire_descriptor(raw: &TensorDescriptorWire) -> Result<MLTensorDescriptor> {
+    let data_type = parse_data_type(&raw.data_type)?;
+    let mut descriptor = MLTensorDescriptor::new(data_type, raw.shape.clone());
+    if raw.readable.unwrap_or(false) {
+        descriptor.set_readable(true);
+    }
+    if raw.writable.unwrap_or(false) {
+        descriptor.set_writable(true);
+    }
+    Ok(descriptor)
+}
 
-    for (name, desc) in descriptors {
-        types.insert(name.clone(), rustnn_dtype_to_string(desc.data_type));
-        shapes.insert(name.clone(), descriptor_shape(desc));
+pub(crate) fn operand_descriptor(raw: &TensorDescriptorWire) -> Result<MLOperandDescriptor> {
+    Ok(MLOperandDescriptor::new(
+        parse_data_type(&raw.data_type)?,
+        raw.shape.clone(),
+    ))
+}
+
+fn io_names_from_graph_info(graph_info: &GraphInfo) -> (Vec<String>, Vec<String>) {
+    let input_names = graph_info
+        .input_operands
+        .iter()
+        .filter_map(|&id| {
+            graph_info
+                .operands
+                .get(id as usize)
+                .and_then(|op| op.name.clone())
+        })
+        .collect();
+    let output_names = graph_info
+        .output_operands
+        .iter()
+        .filter_map(|&id| {
+            graph_info
+                .operands
+                .get(id as usize)
+                .and_then(|op| op.name.clone())
+        })
+        .collect();
+    (input_names, output_names)
+}
+
+fn meta_from_artifacts(artifacts: &ValidationArtifacts, graph_path: &Path) -> LoadMeta {
+    let mut inputs = HashMap::new();
+    for (name, desc) in &artifacts.input_names_to_descriptors {
+        inputs.insert(
+            name.clone(),
+            LoadTensorMeta {
+                data_type: rustnn_dtype_to_string(desc.data_type),
+                shape: descriptor_shape(desc),
+            },
+        );
     }
 
-    (types, shapes)
-}
+    let mut outputs = HashMap::new();
+    for (name, desc) in &artifacts.output_names_to_descriptors {
+        outputs.insert(
+            name.clone(),
+            LoadTensorMeta {
+                data_type: rustnn_dtype_to_string(desc.data_type),
+                shape: descriptor_shape(desc),
+            },
+        );
+    }
 
-fn extract_onnx_io_order(model_bytes: &[u8]) -> Result<(Vec<String>, Vec<String>)> {
-    let model = ModelProto::decode(model_bytes).map_err(|e| {
-        nerr(
-            Status::GenericFailure,
-            format!("failed to decode ONNX model bytes: {e}"),
-        )
-    })?;
+    let (input_names, output_names) = if !artifacts.input_names_to_descriptors.is_empty() {
+        let mut input_names: Vec<String> = artifacts
+            .input_names_to_descriptors
+            .keys()
+            .cloned()
+            .collect();
+        input_names.sort();
+        let mut output_names: Vec<String> = artifacts
+            .output_names_to_descriptors
+            .keys()
+            .cloned()
+            .collect();
+        output_names.sort();
+        (input_names, output_names)
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
-    let graph = model
-        .graph
-        .ok_or_else(|| nerr(Status::GenericFailure, "ONNX model has no graph"))?;
-
-    let input_order = graph.input.into_iter().map(|value| value.name).collect();
-    let output_order = graph.output.into_iter().map(|value| value.name).collect();
-    Ok((input_order, output_order))
-}
-
-fn compile_graph_info(graph: GraphInfo) -> Result<CompiledGraph> {
-    let mut context_props = ContextProperties::default();
-    context_props.tensor_byte_length_limit = 1_000_000_000_000usize;
-    let artifacts = GraphValidator::new(&graph, context_props)
-        .validate()
-        .map_err(|e| {
-            nerr(
-                Status::GenericFailure,
-                format!("graph validation failed: {e}"),
-            )
-        })?;
-
-    let converted = ConverterRegistry::with_defaults()
-        .convert("onnx", &graph)
-        .map_err(|e| {
-            nerr(
-                Status::GenericFailure,
-                format!("graph conversion to ONNX failed: {e}"),
-            )
-        })?;
-
-    let (input_order, output_order) = extract_onnx_io_order(&converted.data)?;
-    let (input_types, input_shapes) = descriptor_maps(&artifacts.input_names_to_descriptors);
-    let (output_types, output_shapes) = descriptor_maps(&artifacts.output_names_to_descriptors);
-
-    Ok(CompiledGraph {
-        onnx_bytes: Arc::new(converted.data),
-        input_order,
-        output_order,
-        input_types,
-        output_types,
-        input_shapes,
-        output_shapes,
-    })
+    LoadMeta {
+        graph_path: graph_path.display().to_string(),
+        input_names,
+        output_names,
+        inputs,
+        outputs,
+    }
 }
 
 fn candidate_graph_names() -> &'static [&'static str] {
@@ -364,315 +373,582 @@ fn find_webnn_graph_path(path_or_dir: &Path) -> Result<PathBuf> {
     ))
 }
 
-fn to_onnx_input(name: &str, dtype: &str, shape: &[usize], data: &[f32]) -> Result<OnnxInput> {
-    let tensor_data = match dtype {
-        "float32" => TensorData::Float32(data.to_vec()),
-        "int64" => TensorData::Int64(data.iter().map(|v| *v as i64).collect()),
-        "int32" => TensorData::Int32(data.iter().map(|v| *v as i32).collect()),
-        "uint32" => TensorData::Uint32(data.iter().map(|v| *v as u32).collect()),
-        "uint64" => TensorData::Uint64(data.iter().map(|v| *v as u64).collect()),
-        "int8" => TensorData::Int8(data.iter().map(|v| *v as i8).collect()),
-        "uint8" => TensorData::Uint8(data.iter().map(|v| *v as u8).collect()),
-        other => {
-            return Err(nerr(
-                Status::GenericFailure,
-                format!("unsupported model input dtype in dispatch: {other}"),
-            ));
-        }
-    };
-
-    Ok(OnnxInput {
-        name: name.to_string(),
-        shape: shape.to_vec(),
-        data: tensor_data,
-    })
+fn with_context<F, T>(context_handle: u32, f: F) -> Result<T>
+where
+    F: FnOnce(&mut ContextSession) -> Result<T>,
+{
+    let mut store = lock_store()?;
+    let session = store.contexts.get_mut(&context_handle).ok_or_else(|| {
+        nerr(
+            Status::InvalidArg,
+            format!("unknown context handle: {context_handle}"),
+        )
+    })?;
+    f(session)
 }
 
-fn output_to_f32(output: &rustnn::OnnxOutputWithData) -> Vec<f32> {
-    if let Some(int64_values) = &output.int64_data {
-        return int64_values.iter().map(|v| *v as f32).collect();
+fn with_builder<F, T>(builder_handle: u32, f: F) -> Result<T>
+where
+    F: FnOnce(&mut BuilderEntry) -> Result<T>,
+{
+    let mut store = lock_store()?;
+    for session in store.contexts.values_mut() {
+        if let Some(builder) = session.builders.get_mut(&builder_handle) {
+            return f(builder);
+        }
     }
+    Err(nerr(
+        Status::InvalidArg,
+        format!("unknown builder handle: {builder_handle}"),
+    ))
+}
 
-    if let Some(uint64_values) = &output.uint64_data {
-        return uint64_values.iter().map(|v| *v as f32).collect();
+pub(crate) fn register_operand(
+    builder: &mut BuilderEntry,
+    operand: MLOperand,
+    meta: OperandWireMeta,
+) -> u32 {
+    let handle = builder.next_operand_handle;
+    builder.next_operand_handle = builder.next_operand_handle.saturating_add(1);
+    builder.operands.insert(handle, (operand, meta));
+    handle
+}
+
+pub(crate) fn register_operand_inferred(
+    builder: &mut BuilderEntry,
+    operand: MLOperand,
+    data_type: String,
+    shape: Vec<u64>,
+) -> u32 {
+    let rustnn_id = builder.next_rustnn_operand_id;
+    builder.next_rustnn_operand_id = builder.next_rustnn_operand_id.saturating_add(1);
+    register_operand(
+        builder,
+        operand,
+        OperandWireMeta {
+            data_type,
+            shape,
+            rustnn_id,
+        },
+    )
+}
+
+fn write_tensor_bytes(context: &mut MLContext, tensor: &MLTensor, data: &[u8]) -> Result<()> {
+    match tensor.data_type() {
+        MLOperandDataType::Float32 => {
+            let values = bytes_to_pod::<f32>(data)?;
+            context
+                .write_tensor(tensor, &values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("writeTensor failed: {e}")))
+        }
+        MLOperandDataType::Float16 => Err(nerr(
+            Status::GenericFailure,
+            "float16 writeTensor is not supported in webnn-node yet",
+        )),
+        MLOperandDataType::Int32 => {
+            let values = bytes_to_pod::<i32>(data)?;
+            context
+                .write_tensor(tensor, &values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("writeTensor failed: {e}")))
+        }
+        MLOperandDataType::Uint32 => {
+            let values = bytes_to_pod::<u32>(data)?;
+            context
+                .write_tensor(tensor, &values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("writeTensor failed: {e}")))
+        }
+        MLOperandDataType::Int64 => {
+            let values = bytes_to_pod::<i64>(data)?;
+            context
+                .write_tensor(tensor, &values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("writeTensor failed: {e}")))
+        }
+        MLOperandDataType::Uint64 => {
+            let values = bytes_to_pod::<u64>(data)?;
+            context
+                .write_tensor(tensor, &values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("writeTensor failed: {e}")))
+        }
+        MLOperandDataType::Int8 => {
+            let values = bytes_to_pod::<i8>(data)?;
+            context
+                .write_tensor(tensor, &values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("writeTensor failed: {e}")))
+        }
+        MLOperandDataType::Uint8 => {
+            let values = bytes_to_pod::<u8>(data)?;
+            context
+                .write_tensor(tensor, &values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("writeTensor failed: {e}")))
+        }
     }
+}
 
-    output.data.iter().map(|v| *v as f32).collect()
+fn read_tensor_bytes(context: &mut MLContext, tensor: &MLTensor) -> Result<Vec<u8>> {
+    let logical = tensor.rustnn_required_bytes();
+    match tensor.data_type() {
+        MLOperandDataType::Float32 => {
+            let mut values = vec![0f32; logical / 4];
+            context
+                .read_tensor(tensor, &mut values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
+            return Ok(bytemuck::cast_slice(&values).to_vec());
+        }
+        MLOperandDataType::Int64 => {
+            let mut values = vec![0i64; logical / 8];
+            context
+                .read_tensor(tensor, &mut values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
+            return Ok(bytemuck::cast_slice(&values).to_vec());
+        }
+        MLOperandDataType::Int32 => {
+            let mut values = vec![0i32; logical / 4];
+            context
+                .read_tensor(tensor, &mut values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
+            return Ok(bytemuck::cast_slice(&values).to_vec());
+        }
+        MLOperandDataType::Uint32 => {
+            let mut values = vec![0u32; logical / 4];
+            context
+                .read_tensor(tensor, &mut values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
+            return Ok(bytemuck::cast_slice(&values).to_vec());
+        }
+        MLOperandDataType::Uint64 => {
+            let mut values = vec![0u64; logical / 8];
+            context
+                .read_tensor(tensor, &mut values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
+            return Ok(bytemuck::cast_slice(&values).to_vec());
+        }
+        MLOperandDataType::Int8 => {
+            let mut values = vec![0i8; logical];
+            context
+                .read_tensor(tensor, &mut values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
+            Ok(bytemuck::cast_slice(&values).to_vec())
+        }
+        MLOperandDataType::Uint8 => {
+            let mut values = vec![0u8; logical];
+            context
+                .read_tensor(tensor, &mut values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
+            return Ok(values);
+        }
+        MLOperandDataType::Float16 => Err(nerr(
+            Status::GenericFailure,
+            "float16 readTensor is not supported in webnn-node yet",
+        )),
+    }
+}
+
+pub(crate) fn bytes_to_pod<T: bytemuck::Pod>(input: &[u8]) -> Result<Vec<T>> {
+    if input.len() % std::mem::size_of::<T>() != 0 {
+        return Err(nerr(
+            Status::InvalidArg,
+            format!(
+                "buffer length {} is not aligned to {}-byte elements",
+                input.len(),
+                std::mem::size_of::<T>()
+            ),
+        ));
+    }
+    Ok(bytemuck::cast_slice(input).to_vec())
 }
 
 #[napi(js_name = "createContext")]
 pub fn create_context(options_json: String) -> Result<u32> {
-    let options: ContextOptions = parse_json(&options_json, "createContext options")?;
-    let mut warnings = Vec::new();
+    let options: ContextOptionsWire = parse_json(&options_json, "createContext options")?;
+    let accelerated = options.accelerated.unwrap_or(true);
+    let rustnn_options =
+        MLContextOptions::new(parse_power_preference(options.power_preference.as_deref()), accelerated);
 
-    let device_type = options
-        .device_type
-        .clone()
-        .unwrap_or_else(|| "cpu".to_string());
-    if device_type.eq_ignore_ascii_case("gpu") {
-        let warning = "deviceType='gpu' requested; current rustnn ONNX wrapper initializes CPU EP, falling back to CPU".to_string();
-        eprintln!("[webnn-node-native] warning: {warning}");
-        warnings.push(warning);
-    }
+    let context = MLContext::create(&rustnn_options).map_err(|e| {
+        nerr(
+            Status::GenericFailure,
+            format!("MLContext::create failed: {e}"),
+        )
+    })?;
 
-    let mut state = lock_state()?;
-    let handle = state.next_context_handle;
-    state.next_context_handle = state.next_context_handle.saturating_add(1);
-
-    state.contexts.insert(
+    let mut store = lock_store()?;
+    let handle = store.next_context_handle;
+    store.next_context_handle = store.next_context_handle.saturating_add(1);
+    store.contexts.insert(
         handle,
-        ContextState {
-            _options: options,
-            warnings,
+        ContextSession {
+            context,
+            graphs: HashMap::new(),
+            tensors: HashMap::new(),
+            builders: HashMap::new(),
+            next_graph_handle: 1,
+            next_tensor_handle: 1,
+            next_builder_handle: 1,
         },
     );
-
     Ok(handle)
 }
 
 #[napi(js_name = "destroyContext")]
 pub fn destroy_context(context_handle: u32) -> Result<()> {
-    let mut state = lock_state()?;
-    state.contexts.remove(&context_handle);
-
-    let graph_ids: Vec<u32> = state
-        .graphs
-        .iter()
-        .filter_map(|(handle, graph)| {
-            if graph.context_handle == context_handle {
-                Some(*handle)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    for graph_id in graph_ids {
-        state.graphs.remove(&graph_id);
-    }
-
-    let tensor_ids: Vec<u32> = state
-        .tensors
-        .iter()
-        .filter_map(|(handle, tensor)| {
-            if tensor.context_handle == context_handle {
-                Some(*handle)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    for tensor_id in tensor_ids {
-        state.tensors.remove(&tensor_id);
-    }
-
+    let mut store = lock_store()?;
+    store.contexts.remove(&context_handle);
     Ok(())
 }
 
-#[napi(js_name = "createTensor")]
-pub fn create_tensor(context_handle: u32, descriptor_json: String) -> Result<u32> {
-    let descriptor: TensorDescriptorWire = parse_json(&descriptor_json, "createTensor descriptor")?;
-
-    if descriptor.data_type != "float32" {
-        return Err(nerr(
-            Status::InvalidArg,
-            format!(
-                "only float32 tensors are supported in MVP, got {}",
-                descriptor.data_type
-            ),
-        ));
-    }
-
-    let element_count = checked_element_count(&descriptor.shape)?;
-
-    let mut state = lock_state()?;
-    if !state.contexts.contains_key(&context_handle) {
-        return Err(nerr(
-            Status::InvalidArg,
-            format!("unknown context handle: {context_handle}"),
-        ));
-    }
-
-    let handle = state.next_tensor_handle;
-    state.next_tensor_handle = state.next_tensor_handle.saturating_add(1);
-
-    state.tensors.insert(
-        handle,
-        TensorState {
-            context_handle,
-            descriptor,
-            data: vec![0.0_f32; element_count],
-        },
-    );
-
-    Ok(handle)
+#[napi(js_name = "contextAccelerated")]
+pub fn context_accelerated(context_handle: u32) -> Result<bool> {
+    with_context(context_handle, |session| Ok(session.context.accelerated()))
 }
 
-#[napi(js_name = "destroyTensor")]
-pub fn destroy_tensor(context_handle: u32, tensor_handle: u32) -> Result<()> {
-    let mut state = lock_state()?;
-
-    let Some(tensor) = state.tensors.get(&tensor_handle) else {
-        return Ok(());
-    };
-
-    if tensor.context_handle != context_handle {
-        return Err(nerr(
-            Status::InvalidArg,
-            format!(
-                "tensor handle {} does not belong to context {}",
-                tensor_handle, context_handle
-            ),
-        ));
-    }
-
-    state.tensors.remove(&tensor_handle);
-    Ok(())
-}
-
-#[napi(js_name = "writeTensor")]
-pub fn write_tensor(context_handle: u32, tensor_handle: u32, data: Buffer) -> Result<()> {
-    let values = bytes_to_f32(data.as_ref())?;
-
-    let mut state = lock_state()?;
-    let tensor = state.tensors.get_mut(&tensor_handle).ok_or_else(|| {
-        nerr(
-            Status::InvalidArg,
-            format!("unknown tensor handle: {tensor_handle}"),
-        )
-    })?;
-
-    if tensor.context_handle != context_handle {
-        return Err(nerr(
-            Status::InvalidArg,
-            format!(
-                "tensor handle {} does not belong to context {}",
-                tensor_handle, context_handle
-            ),
-        ));
-    }
-
-    let expected = checked_element_count(&tensor.descriptor.shape)?;
-    if values.len() != expected {
-        return Err(nerr(
-            Status::InvalidArg,
-            format!(
-                "tensor data length mismatch for tensor {}: expected {}, got {}",
-                tensor_handle,
-                expected,
-                values.len()
-            ),
-        ));
-    }
-
-    tensor.data = values;
-    Ok(())
-}
-
-#[napi(js_name = "readTensor")]
-pub fn read_tensor(context_handle: u32, tensor_handle: u32) -> Result<Buffer> {
-    let state = lock_state()?;
-    let tensor = state.tensors.get(&tensor_handle).ok_or_else(|| {
-        nerr(
-            Status::InvalidArg,
-            format!("unknown tensor handle: {tensor_handle}"),
-        )
-    })?;
-
-    if tensor.context_handle != context_handle {
-        return Err(nerr(
-            Status::InvalidArg,
-            format!(
-                "tensor handle {} does not belong to context {}",
-                tensor_handle, context_handle
-            ),
-        ));
-    }
-
-    Ok(Buffer::from(f32_to_bytes(&tensor.data)))
-}
-
-#[napi(js_name = "compileGraph")]
-pub async fn compile_graph(context_handle: u32, graph_json: String) -> Result<u32> {
-    {
-        let state = lock_state()?;
-        if !state.contexts.contains_key(&context_handle) {
-            return Err(nerr(
-                Status::InvalidArg,
-                format!("unknown context handle: {context_handle}"),
-            ));
-        }
-    }
-
-    let compiled = tokio::task::spawn_blocking(move || {
-        let graph: GraphInfo = serde_json::from_str(&graph_json).map_err(|e| {
+#[napi(js_name = "createGraphBuilder")]
+pub fn create_graph_builder(context_handle: u32) -> Result<u32> {
+    with_context(context_handle, |session| {
+        let builder = MLGraphBuilder::new(&mut session.context).map_err(|e| {
             nerr(
-                Status::InvalidArg,
-                format!("failed to parse graph JSON for compileGraph: {e}"),
+                Status::GenericFailure,
+                format!("MLGraphBuilder::new failed: {e}"),
             )
         })?;
-        compile_graph_info(graph)
+        let handle = session.next_builder_handle;
+        session.next_builder_handle = session.next_builder_handle.saturating_add(1);
+        session.builders.insert(
+            handle,
+            BuilderEntry {
+                builder,
+                operands: HashMap::new(),
+                next_operand_handle: 1,
+                next_rustnn_operand_id: 0,
+            },
+        );
+        Ok(handle)
+    })
+}
+
+#[napi(js_name = "destroyGraphBuilder")]
+pub fn destroy_graph_builder(builder_handle: u32) -> Result<()> {
+    let mut store = lock_store()?;
+    for session in store.contexts.values_mut() {
+        if session.builders.remove(&builder_handle).is_some() {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+#[napi(js_name = "builderInput")]
+pub fn builder_input(
+    builder_handle: u32,
+    name: String,
+    descriptor_json: String,
+) -> Result<u32> {
+    let descriptor: TensorDescriptorWire =
+        parse_json(&descriptor_json, "builderInput descriptor")?;
+    let operand_desc = operand_descriptor(&descriptor)?;
+    let meta = OperandWireMeta {
+        data_type: descriptor.data_type.clone(),
+        shape: descriptor.shape.clone(),
+        rustnn_id: 0,
+    };
+
+    with_builder(builder_handle, |builder| {
+        let operand = builder
+            .builder
+            .input(&name, &operand_desc)
+            .map_err(|e| nerr(Status::GenericFailure, format!("builder.input failed: {e}")))?;
+        let rustnn_id = builder.next_rustnn_operand_id;
+        builder.next_rustnn_operand_id = builder.next_rustnn_operand_id.saturating_add(1);
+        let meta = OperandWireMeta {
+            rustnn_id,
+            ..meta
+        };
+        Ok(register_operand(builder, operand, meta))
+    })
+}
+
+#[napi(js_name = "builderInvoke")]
+pub fn builder_invoke(builder_handle: u32, invoke_json: String) -> Result<String> {
+    let wire: builder_dispatch::BuilderInvokeWire =
+        parse_json(&invoke_json, "builderInvoke payload")?;
+
+    with_builder(builder_handle, |builder| {
+        let result = builder_dispatch::dispatch_builder_op(builder, wire)?;
+        serde_json::to_string(&result).map_err(|e| {
+            nerr(
+                Status::GenericFailure,
+                format!("builderInvoke result serialization failed: {e}"),
+            )
+        })
+    })
+}
+
+#[napi(js_name = "builderConstantBuffer")]
+pub fn builder_constant_buffer(
+    builder_handle: u32,
+    descriptor_json: String,
+    data: Buffer,
+) -> Result<String> {
+    let descriptor: TensorDescriptorWire =
+        parse_json(&descriptor_json, "builderConstantBuffer descriptor")?;
+
+    with_builder(builder_handle, |builder| {
+        let result =
+            builder_dispatch::constant_from_buffer(builder, &descriptor, data.as_ref())?;
+        serde_json::to_string(&result).map_err(|e| {
+            nerr(
+                Status::GenericFailure,
+                format!("builderConstantBuffer result serialization failed: {e}"),
+            )
+        })
+    })
+}
+
+#[napi(js_name = "builderBuild")]
+pub async fn builder_build(
+    context_handle: u32,
+    builder_handle: u32,
+    outputs_json: String,
+) -> Result<u32> {
+    let outputs_map: HashMap<String, u32> = parse_json(&outputs_json, "builderBuild outputs")?;
+
+    tokio::task::spawn_blocking(move || {
+        with_context(context_handle, |session| {
+            let builder_entry = session.builders.remove(&builder_handle).ok_or_else(|| {
+                nerr(
+                    Status::InvalidArg,
+                    format!("unknown builder handle: {builder_handle}"),
+                )
+            })?;
+
+            let mut rust_outputs = HashMap::new();
+            for (name, operand_handle) in &outputs_map {
+                let (operand, _) = builder_entry.operands.get(operand_handle).ok_or_else(|| {
+                    nerr(
+                        Status::InvalidArg,
+                        format!("unknown output operand handle {operand_handle}"),
+                    )
+                })?;
+                rust_outputs.insert(name.as_str(), *operand);
+            }
+
+            let mut builder = builder_entry.builder;
+            let graph = builder.build(&rust_outputs).map_err(|e| {
+                nerr(
+                    Status::GenericFailure,
+                    format!("MLGraphBuilder::build failed: {e}"),
+                )
+            })?;
+
+            let input_names = graph
+                .input_descriptors
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            let output_names = graph
+                .output_descriptors
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+
+            let mut inputs = HashMap::new();
+            for (name, desc) in &graph.input_descriptors {
+                inputs.insert(
+                    name.clone(),
+                    LoadTensorMeta {
+                        data_type: rustnn_dtype_to_string(desc.data_type),
+                        shape: descriptor_shape(desc),
+                    },
+                );
+            }
+            let mut outputs = HashMap::new();
+            for (name, desc) in &graph.output_descriptors {
+                outputs.insert(
+                    name.clone(),
+                    LoadTensorMeta {
+                        data_type: rustnn_dtype_to_string(desc.data_type),
+                        shape: descriptor_shape(desc),
+                    },
+                );
+            }
+
+            let graph_handle = session.next_graph_handle;
+            session.next_graph_handle = session.next_graph_handle.saturating_add(1);
+            session.graphs.insert(
+                graph_handle,
+                GraphEntry {
+                    graph,
+                    input_names,
+                    output_names,
+                    inputs,
+                    outputs,
+                },
+            );
+            Ok(graph_handle)
+        })
     })
     .await
     .map_err(|e| {
         nerr(
             Status::GenericFailure,
-            format!("compileGraph worker join failure: {e}"),
+            format!("builderBuild worker join failure: {e}"),
         )
-    })??;
+    })?
+}
 
-    let mut state = lock_state()?;
-    if !state.contexts.contains_key(&context_handle) {
-        return Err(nerr(
-            Status::InvalidArg,
-            format!("context {context_handle} was destroyed during compileGraph"),
-        ));
-    }
+#[napi(js_name = "createTensor")]
+pub fn create_tensor(context_handle: u32, descriptor_json: String) -> Result<u32> {
+    let descriptor = wire_descriptor(&parse_json(&descriptor_json, "createTensor descriptor")?)?;
 
-    let graph_handle = state.next_graph_handle;
-    state.next_graph_handle = state.next_graph_handle.saturating_add(1);
+    with_context(context_handle, |session| {
+        let tensor = session
+            .context
+            .create_tensor(&descriptor)
+            .map_err(|e| nerr(Status::GenericFailure, format!("createTensor failed: {e}")))?;
+        let handle = session.next_tensor_handle;
+        session.next_tensor_handle = session.next_tensor_handle.saturating_add(1);
+        session.tensors.insert(handle, tensor);
+        Ok(handle)
+    })
+}
 
-    state.graphs.insert(
-        graph_handle,
-        GraphState {
-            context_handle,
-            onnx_bytes: compiled.onnx_bytes,
-            input_order: compiled.input_order,
-            output_order: compiled.output_order,
-            input_types: compiled.input_types,
-            output_types: compiled.output_types,
-            input_shapes: compiled.input_shapes,
-            output_shapes: compiled.output_shapes,
-        },
-    );
+#[napi(js_name = "destroyTensor")]
+pub fn destroy_tensor(context_handle: u32, tensor_handle: u32) -> Result<()> {
+    with_context(context_handle, |session| {
+        session.tensors.remove(&tensor_handle);
+        Ok(())
+    })
+}
 
-    Ok(graph_handle)
+#[napi(js_name = "writeTensor")]
+pub fn write_tensor(context_handle: u32, tensor_handle: u32, data: Buffer) -> Result<()> {
+    with_context(context_handle, |session| {
+        let tensor = session.tensors.get(&tensor_handle).ok_or_else(|| {
+            nerr(
+                Status::InvalidArg,
+                format!("unknown tensor handle: {tensor_handle}"),
+            )
+        })?;
+        write_tensor_bytes(&mut session.context, tensor, data.as_ref())
+    })
+}
+
+#[napi(js_name = "readTensor")]
+pub fn read_tensor(context_handle: u32, tensor_handle: u32) -> Result<Buffer> {
+    with_context(context_handle, |session| {
+        let tensor = session.tensors.get(&tensor_handle).ok_or_else(|| {
+            nerr(
+                Status::InvalidArg,
+                format!("unknown tensor handle: {tensor_handle}"),
+            )
+        })?;
+        let bytes = read_tensor_bytes(&mut session.context, tensor)?;
+        Ok(Buffer::from(bytes))
+    })
+}
+
+#[napi(js_name = "rustnnResizeTensor")]
+pub fn rustnn_resize_tensor(
+    context_handle: u32,
+    tensor_handle: u32,
+    shape_json: String,
+) -> Result<()> {
+    let shape: Vec<u64> = parse_json(&shape_json, "rustnnResizeTensor shape")?;
+    with_context(context_handle, |session| {
+        let tensor = session
+            .tensors
+            .get_mut(&tensor_handle)
+            .ok_or_else(|| nerr(Status::InvalidArg, format!("unknown tensor handle: {tensor_handle}")))?;
+        session
+            .context
+            .rustnn_resize_tensor(tensor, &shape)
+            .map_err(|e| nerr(Status::GenericFailure, format!("rustnn_resize_tensor failed: {e}")))
+    })
+}
+
+#[napi(js_name = "rustnnSetTensorCapacity")]
+pub fn rustnn_set_tensor_capacity(
+    context_handle: u32,
+    tensor_handle: u32,
+    shape_json: String,
+) -> Result<()> {
+    let shape: Vec<u64> = parse_json(&shape_json, "rustnnSetTensorCapacity shape")?;
+    with_context(context_handle, |session| {
+        let tensor = session
+            .tensors
+            .get_mut(&tensor_handle)
+            .ok_or_else(|| nerr(Status::InvalidArg, format!("unknown tensor handle: {tensor_handle}")))?;
+        session
+            .context
+            .rustnn_set_tensor_capacity(tensor, &shape)
+            .map_err(|e| {
+                nerr(
+                    Status::GenericFailure,
+                    format!("rustnn_set_tensor_capacity failed: {e}"),
+                )
+            })
+    })
+}
+
+#[napi(js_name = "dispatch")]
+pub fn dispatch(
+    context_handle: u32,
+    graph_handle: u32,
+    inputs_json: String,
+    outputs_json: String,
+) -> Result<()> {
+    let inputs_map: HashMap<String, u32> = parse_json(&inputs_json, "dispatch inputs")?;
+    let outputs_map: HashMap<String, u32> = parse_json(&outputs_json, "dispatch outputs")?;
+
+    with_context(context_handle, |session| {
+        let graph_entry = session.graphs.get_mut(&graph_handle).ok_or_else(|| {
+            nerr(
+                Status::InvalidArg,
+                format!("unknown graph handle: {graph_handle}"),
+            )
+        })?;
+
+        let mut inputs = HashMap::new();
+        for (name, tensor_handle) in &inputs_map {
+            let tensor = session.tensors.get(tensor_handle).ok_or_else(|| {
+                nerr(
+                    Status::InvalidArg,
+                    format!("unknown input tensor handle {tensor_handle} for '{name}'"),
+                )
+            })?;
+            inputs.insert(name.as_str(), tensor);
+        }
+
+        let mut outputs = HashMap::new();
+        for (name, tensor_handle) in &outputs_map {
+            let tensor = session.tensors.get(tensor_handle).ok_or_else(|| {
+                nerr(
+                    Status::InvalidArg,
+                    format!("unknown output tensor handle {tensor_handle} for '{name}'"),
+                )
+            })?;
+            outputs.insert(name.as_str(), tensor);
+        }
+
+        session
+            .context
+            .dispatch(&mut graph_entry.graph, &inputs, &outputs)
+            .map_err(|e| nerr(Status::GenericFailure, format!("dispatch failed: {e}")))
+    })
+}
+
+#[napi(js_name = "destroyGraph")]
+pub fn destroy_graph(context_handle: u32, graph_handle: u32) -> Result<()> {
+    with_context(context_handle, |session| {
+        session.graphs.remove(&graph_handle);
+        Ok(())
+    })
 }
 
 #[napi(js_name = "loadWebnnModel")]
-pub async fn load_webnn_model(
-    context_handle: u32,
-    path_or_dir: String,
-    options_json: String,
-) -> Result<NativeModelLoadResult> {
-    let options: ContextOptions = parse_json(&options_json, "loadWebnnModel options")?;
-
-    let context_warnings = {
-        let state = lock_state()?;
-        let Some(ctx) = state.contexts.get(&context_handle) else {
-            return Err(nerr(
-                Status::InvalidArg,
-                format!("unknown context handle: {context_handle}"),
-            ));
-        };
-        ctx.warnings.clone()
-    };
-
-    let input_path = PathBuf::from(path_or_dir);
-    let compiled_result = tokio::task::spawn_blocking(move || {
-        let resolved_path = find_webnn_graph_path(&input_path)?;
-        let graph = load_graph_from_path(&resolved_path).map_err(|e| {
+pub async fn load_webnn_model(context_handle: u32, path_or_dir: String) -> Result<NativeModelLoadResult> {
+    tokio::task::spawn_blocking(move || {
+        let resolved_path = find_webnn_graph_path(Path::new(&path_or_dir))?;
+        let graph_info = load_graph_from_path(&resolved_path).map_err(|e| {
             nerr(
                 Status::GenericFailure,
                 format!(
@@ -682,22 +958,62 @@ pub async fn load_webnn_model(
             )
         })?;
 
-        let compiled = compile_graph_info(graph)?;
-
-        let mut warnings = Vec::new();
-        if options
-            .device_type
-            .as_deref()
-            .map(|v| v.eq_ignore_ascii_case("gpu"))
-            .unwrap_or(false)
-        {
-            warnings.push(
-                "deviceType='gpu' requested; ONNX Runtime CPU EP was used by rustnn wrapper"
-                    .to_string(),
-            );
+        let context_props = ContextProperties {
+            tensor_byte_length_limit: 1_000_000_000_000usize,
+            ..Default::default()
+        };
+        let artifacts = GraphValidator::new(&graph_info, context_props)
+            .validate()
+            .map_err(|e| nerr(Status::GenericFailure, format!("graph validation failed: {e}")))?;
+        let meta = meta_from_artifacts(&artifacts, &resolved_path);
+        let (input_names, output_names) = io_names_from_graph_info(&graph_info);
+        let mut meta = meta;
+        if !input_names.is_empty() {
+            meta.input_names = input_names;
+        }
+        if !output_names.is_empty() {
+            meta.output_names = output_names;
         }
 
-        Ok::<(PathBuf, CompiledGraph, Vec<String>), Error>((resolved_path, compiled, warnings))
+        with_context(context_handle, |session| {
+            let mut builder = MLGraphBuilder::new(&mut session.context).map_err(|e| {
+                nerr(
+                    Status::GenericFailure,
+                    format!("MLGraphBuilder::new failed: {e}"),
+                )
+            })?;
+            let graph = builder.build_graph_info(graph_info).map_err(|e| {
+                nerr(
+                    Status::GenericFailure,
+                    format!("build_graph_info failed: {e}"),
+                )
+            })?;
+
+            let graph_handle = session.next_graph_handle;
+            session.next_graph_handle = session.next_graph_handle.saturating_add(1);
+            session.graphs.insert(
+                graph_handle,
+                GraphEntry {
+                    graph,
+                    input_names: meta.input_names.clone(),
+                    output_names: meta.output_names.clone(),
+                    inputs: meta.inputs.clone(),
+                    outputs: meta.outputs.clone(),
+                },
+            );
+
+            let meta_json = serde_json::to_string(&meta).map_err(|e| {
+                nerr(
+                    Status::GenericFailure,
+                    format!("failed to serialize loadWebnnModel metadata: {e}"),
+                )
+            })?;
+
+            Ok(NativeModelLoadResult {
+                graph_handle,
+                meta_json,
+            })
+        })
     })
     .await
     .map_err(|e| {
@@ -705,290 +1021,5 @@ pub async fn load_webnn_model(
             Status::GenericFailure,
             format!("loadWebnnModel worker join failure: {e}"),
         )
-    })??;
-
-    let (resolved_path, compiled, mut warnings) = compiled_result;
-    warnings.extend(context_warnings);
-
-    let mut state = lock_state()?;
-    if !state.contexts.contains_key(&context_handle) {
-        return Err(nerr(
-            Status::InvalidArg,
-            format!("context {context_handle} was destroyed during loadWebnnModel"),
-        ));
-    }
-
-    let graph_handle = state.next_graph_handle;
-    state.next_graph_handle = state.next_graph_handle.saturating_add(1);
-
-    let graph_state = GraphState {
-        context_handle,
-        onnx_bytes: compiled.onnx_bytes,
-        input_order: compiled.input_order,
-        output_order: compiled.output_order,
-        input_types: compiled.input_types,
-        output_types: compiled.output_types,
-        input_shapes: compiled.input_shapes,
-        output_shapes: compiled.output_shapes,
-    };
-
-    let inputs_meta: HashMap<String, LoadTensorMeta> = graph_state
-        .input_order
-        .iter()
-        .filter_map(|name| {
-            let data_type = graph_state.input_types.get(name)?;
-            let shape = graph_state.input_shapes.get(name)?;
-            Some((
-                name.clone(),
-                LoadTensorMeta {
-                    data_type: data_type.clone(),
-                    shape: shape.clone(),
-                },
-            ))
-        })
-        .collect();
-
-    let outputs_meta: HashMap<String, LoadTensorMeta> = graph_state
-        .output_order
-        .iter()
-        .filter_map(|name| {
-            let data_type = graph_state.output_types.get(name)?;
-            let shape = graph_state.output_shapes.get(name)?;
-            Some((
-                name.clone(),
-                LoadTensorMeta {
-                    data_type: data_type.clone(),
-                    shape: shape.clone(),
-                },
-            ))
-        })
-        .collect();
-
-    let meta = LoadMeta {
-        graph_path: resolved_path.display().to_string(),
-        input_names: graph_state.input_order.clone(),
-        output_names: graph_state.output_order.clone(),
-        inputs: inputs_meta,
-        outputs: outputs_meta,
-        warnings,
-    };
-
-    state.graphs.insert(graph_handle, graph_state);
-
-    let meta_json = serde_json::to_string(&meta).map_err(|e| {
-        nerr(
-            Status::GenericFailure,
-            format!("failed to serialize loadWebnnModel metadata: {e}"),
-        )
-    })?;
-
-    Ok(NativeModelLoadResult {
-        graph_handle,
-        meta_json,
-    })
-}
-
-struct DispatchPayload {
-    onnx_bytes: Arc<Vec<u8>>,
-    onnx_inputs: Vec<OnnxInput>,
-    outputs_map: HashMap<String, u32>,
-    context_handle: u32,
-}
-
-#[napi(js_name = "dispatch")]
-pub async fn dispatch(
-    context_handle: u32,
-    graph_handle: u32,
-    inputs_json: String,
-    outputs_json: String,
-) -> Result<()> {
-    let inputs_map: HashMap<String, u32> = parse_json(&inputs_json, "dispatch inputs")?;
-    let outputs_map: HashMap<String, u32> = parse_json(&outputs_json, "dispatch outputs")?;
-
-    let payload = {
-        let state = lock_state()?;
-        let graph = state.graphs.get(&graph_handle).ok_or_else(|| {
-            nerr(
-                Status::InvalidArg,
-                format!("unknown graph handle: {graph_handle}"),
-            )
-        })?;
-
-        if graph.context_handle != context_handle {
-            return Err(nerr(
-                Status::InvalidArg,
-                format!(
-                    "graph handle {} does not belong to context {}",
-                    graph_handle, context_handle
-                ),
-            ));
-        }
-
-        let mut onnx_inputs = Vec::with_capacity(graph.input_order.len());
-        for input_name in &graph.input_order {
-            let tensor_handle = inputs_map.get(input_name).ok_or_else(|| {
-                nerr(
-                    Status::InvalidArg,
-                    format!("missing input tensor for model input '{input_name}'"),
-                )
-            })?;
-
-            let tensor = state.tensors.get(tensor_handle).ok_or_else(|| {
-                nerr(
-                    Status::InvalidArg,
-                    format!("unknown tensor handle for input '{input_name}': {tensor_handle}"),
-                )
-            })?;
-
-            if tensor.context_handle != context_handle {
-                return Err(nerr(
-                    Status::InvalidArg,
-                    format!(
-                        "input tensor {} does not belong to context {}",
-                        tensor_handle, context_handle
-                    ),
-                ));
-            }
-
-            let expected_dtype = graph
-                .input_types
-                .get(input_name)
-                .map(String::as_str)
-                .unwrap_or("float32");
-
-            let shape = if let Some(expected_shape) = graph.input_shapes.get(input_name) {
-                if !expected_shape.is_empty() && *expected_shape != tensor.descriptor.shape {
-                    tensor.descriptor.shape.clone()
-                } else {
-                    expected_shape.clone()
-                }
-            } else {
-                tensor.descriptor.shape.clone()
-            };
-
-            let expected_elements = checked_element_count(&shape)?;
-            if tensor.data.len() != expected_elements {
-                return Err(nerr(
-                    Status::InvalidArg,
-                    format!(
-                        "input tensor '{}' has {} elements but shape {:?} requires {}",
-                        input_name,
-                        tensor.data.len(),
-                        shape,
-                        expected_elements
-                    ),
-                ));
-            }
-
-            onnx_inputs.push(to_onnx_input(
-                input_name,
-                expected_dtype,
-                &shape,
-                &tensor.data,
-            )?);
-        }
-
-        for (output_name, tensor_handle) in &outputs_map {
-            let tensor = state.tensors.get(tensor_handle).ok_or_else(|| {
-                nerr(
-                    Status::InvalidArg,
-                    format!("unknown tensor handle for output '{output_name}': {tensor_handle}"),
-                )
-            })?;
-            if tensor.context_handle != context_handle {
-                return Err(nerr(
-                    Status::InvalidArg,
-                    format!(
-                        "output tensor {} does not belong to context {}",
-                        tensor_handle, context_handle
-                    ),
-                ));
-            }
-        }
-
-        DispatchPayload {
-            onnx_bytes: graph.onnx_bytes.clone(),
-            onnx_inputs,
-            outputs_map,
-            context_handle,
-        }
-    };
-
-    let DispatchPayload {
-        onnx_bytes,
-        onnx_inputs,
-        outputs_map,
-        context_handle: dispatch_context_handle,
-    } = payload;
-
-    let outputs =
-        tokio::task::spawn_blocking(move || run_onnx_with_inputs(onnx_bytes.as_ref(), onnx_inputs))
-            .await
-            .map_err(|e| {
-                nerr(
-                    Status::GenericFailure,
-                    format!("dispatch worker join failure: {e}"),
-                )
-            })?
-            .map_err(|e| nerr(Status::GenericFailure, format!("dispatch failed: {e}")))?;
-
-    let outputs_by_name: HashMap<String, rustnn::OnnxOutputWithData> = outputs
-        .into_iter()
-        .map(|output| (output.name.clone(), output))
-        .collect();
-
-    let mut state = lock_state()?;
-    if !state.contexts.contains_key(&dispatch_context_handle) {
-        return Err(nerr(
-            Status::InvalidArg,
-            format!(
-                "context {} was destroyed during dispatch",
-                dispatch_context_handle
-            ),
-        ));
-    }
-
-    for (output_name, tensor_handle) in outputs_map {
-        let output = outputs_by_name.get(&output_name).ok_or_else(|| {
-            nerr(
-                Status::GenericFailure,
-                format!("model output '{output_name}' was not produced by ONNX execution"),
-            )
-        })?;
-
-        let output_values = output_to_f32(output);
-        let tensor = state.tensors.get_mut(&tensor_handle).ok_or_else(|| {
-            nerr(
-                Status::InvalidArg,
-                format!("output tensor handle no longer exists: {tensor_handle}"),
-            )
-        })?;
-
-        tensor.data = output_values;
-        tensor.descriptor.shape = output.shape.clone();
-    }
-
-    Ok(())
-}
-
-#[napi(js_name = "destroyGraph")]
-pub fn destroy_graph(context_handle: u32, graph_handle: u32) -> Result<()> {
-    let mut state = lock_state()?;
-
-    let Some(graph) = state.graphs.get(&graph_handle) else {
-        return Ok(());
-    };
-
-    if graph.context_handle != context_handle {
-        return Err(nerr(
-            Status::InvalidArg,
-            format!(
-                "graph handle {} does not belong to context {}",
-                graph_handle, context_handle
-            ),
-        ));
-    }
-
-    state.graphs.remove(&graph_handle);
-    Ok(())
+    })?
 }
