@@ -1,7 +1,16 @@
 node_modules/
+.cache/
+.venv/
 target/
 packages/webnn-node/dist/
 demo/dist/
 packages/webnn-node/native/target/
+
+# Native addon binaries (cargo build + install-addon.mjs)
 packages/webnn-node/native/*.node
+packages/webnn-node/index.node
+
+# Machine-local config (ORT paths, demo options)
+demo/.env
+
 npm-debug.log*

@@ -13,6 +13,9 @@
     "demo": "npm run build && npm --prefix demo run demo",
     "demo:builder": "npm run build && npm --prefix demo run demo:builder",
     "demo:run": "npm --prefix demo run demo",
+    "test:wpt:fetch": "node scripts/fetch-wpt.mjs",
+    "test:wpt:run": "npm run build && node scripts/wpt/run-conformance.mjs",
+    "sync:idl": "node scripts/sync-idl-from-wpt.mjs",
     "clean": "rm -rf packages/webnn-node/dist demo/dist"
   },
   "devDependencies": {

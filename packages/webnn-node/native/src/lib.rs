@@ -441,10 +441,12 @@ fn write_tensor_bytes(context: &mut MLContext, tensor: &MLTensor, data: &[u8]) -
                 .write_tensor(tensor, &values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("writeTensor failed: {e}")))
         }
-        MLOperandDataType::Float16 => Err(nerr(
-            Status::GenericFailure,
-            "float16 writeTensor is not supported in webnn-node yet",
-        )),
+        MLOperandDataType::Float16 => {
+            let values = bytes_to_pod::<u16>(data)?;
+            context
+                .write_tensor(tensor, &values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("writeTensor failed: {e}")))
+        }
         MLOperandDataType::Int32 => {
             let values = bytes_to_pod::<i32>(data)?;
             context
@@ -536,10 +538,13 @@ fn read_tensor_bytes(context: &mut MLContext, tensor: &MLTensor) -> Result<Vec<u
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
             return Ok(values);
         }
-        MLOperandDataType::Float16 => Err(nerr(
-            Status::GenericFailure,
-            "float16 readTensor is not supported in webnn-node yet",
-        )),
+        MLOperandDataType::Float16 => {
+            let mut values = vec![0u16; logical / 2];
+            context
+                .read_tensor(tensor, &mut values)
+                .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
+            Ok(bytemuck::cast_slice(&values).to_vec())
+        }
     }
 }
 

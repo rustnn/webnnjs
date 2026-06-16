@@ -8,7 +8,20 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.resolve(__dirname, '..');
-const idlPath = path.join(pkgRoot, 'idl', 'webnn.idl');
+const repoRoot = path.resolve(pkgRoot, '../..');
+
+function resolveIdlPath() {
+  const wptRoot = process.env.WPT_DIR ?? path.join(repoRoot, '.cache', 'wpt');
+  const cachedIdl = path.join(wptRoot, 'interfaces', 'webnn.idl');
+  const vendoredIdl = path.join(pkgRoot, 'idl', 'webnn.idl');
+
+  if (fs.existsSync(cachedIdl)) {
+    return cachedIdl;
+  }
+  return vendoredIdl;
+}
+
+const idlPath = resolveIdlPath();
 const rustOut = path.join(pkgRoot, 'native', 'src', 'generated', 'builder_ops.rs');
 const tsOut = path.join(pkgRoot, 'src', 'generated', 'builder-methods.ts');
 const tsTypesOut = path.join(pkgRoot, 'src', 'generated', 'builder-options.ts');
@@ -200,13 +213,7 @@ function parseParams(paramsRaw) {
   return { params, optionsType };
 }
 
-const NOT_IMPLEMENTED = new Set([
-  'gru',
-  'gruCell',
-  'lstm',
-  'lstmCell',
-  'scatterElements',
-]);
+const NOT_IMPLEMENTED = new Set();
 
 const OPTION_OPERAND_FIELDS = {
   batchNormalization: ['scale', 'bias'],
@@ -238,8 +245,19 @@ function classify(method) {
     return { ...base, category: 'not_implemented' };
   }
 
+  if (name === 'scatterElements') {
+    return { ...base, category: 'ternary' };
+  }
+  if (name === 'gruCell') {
+    return { ...base, category: 'recurrent_cell' };
+  }
+  if (name === 'lstmCell') {
+    return { ...base, category: 'recurrent_cell_multi' };
+  }
+
   if (returnKind === 'sequence') {
     if (name === 'split') return { ...base, category: 'split' };
+    if (name === 'gru' || name === 'lstm') return { ...base, category: 'recurrent' };
     return { ...base, category: 'not_implemented' };
   }
 
@@ -409,6 +427,77 @@ function emitRustArm(op) {
             };
             Ok(multi_result(builder, outs)?)
         }`;
+    case 'recurrent':
+      return `        "${op.idlName}" => {
+            let input = operand_at(builder, &wire, 0)?;
+            let weight = operand_at(builder, &wire, 1)?;
+            let recurrent_weight = operand_at(builder, &wire, 2)?;
+            let steps = wire.steps.ok_or_else(|| missing_field("${op.idlName}", "steps"))?;
+            let hidden_size = wire
+                .hidden_size
+                .ok_or_else(|| missing_field("${op.idlName}", "hiddenSize"))?;
+            let opts: ${opts} = parse_options(${patchFields})?;
+            let outs = builder
+                .builder
+                .${rustMethodName(op.idlName)}_with_options(
+                    input,
+                    weight,
+                    recurrent_weight,
+                    steps,
+                    hidden_size,
+                    opts,
+                )
+                .map_err(|e| op_err("${op.idlName}", e))?;
+            Ok(multi_result(builder, outs)?)
+        }`;
+    case 'recurrent_cell':
+      return `        "${op.idlName}" => {
+            let input = operand_at(builder, &wire, 0)?;
+            let weight = operand_at(builder, &wire, 1)?;
+            let recurrent_weight = operand_at(builder, &wire, 2)?;
+            let hidden_state = operand_at(builder, &wire, 3)?;
+            let hidden_size = wire
+                .hidden_size
+                .ok_or_else(|| missing_field("${op.idlName}", "hiddenSize"))?;
+            let opts: ${opts} = parse_options(${patchFields})?;
+            let out = builder
+                .builder
+                .${rustMethodName(op.idlName)}_with_options(
+                    input,
+                    weight,
+                    recurrent_weight,
+                    hidden_state,
+                    hidden_size,
+                    opts,
+                )
+                .map_err(|e| op_err("${op.idlName}", e))?;
+            Ok(single_result(builder, out)?)
+        }`;
+    case 'recurrent_cell_multi':
+      return `        "${op.idlName}" => {
+            let input = operand_at(builder, &wire, 0)?;
+            let weight = operand_at(builder, &wire, 1)?;
+            let recurrent_weight = operand_at(builder, &wire, 2)?;
+            let hidden_state = operand_at(builder, &wire, 3)?;
+            let cell_state = operand_at(builder, &wire, 4)?;
+            let hidden_size = wire
+                .hidden_size
+                .ok_or_else(|| missing_field("${op.idlName}", "hiddenSize"))?;
+            let opts: ${opts} = parse_options(${patchFields})?;
+            let outs = builder
+                .builder
+                .${rustMethodName(op.idlName)}_with_options(
+                    input,
+                    weight,
+                    recurrent_weight,
+                    hidden_state,
+                    cell_state,
+                    hidden_size,
+                    opts,
+                )
+                .map_err(|e| op_err("${op.idlName}", e))?;
+            Ok(multi_result(builder, outs)?)
+        }`;
     default:
       return `        "${op.idlName}" => Err(not_implemented_op("${op.idlName}")),`;
   }
@@ -455,7 +544,7 @@ function emitTsMethod(op) {
   const sequenceParam = valueParams.find((p) => p.kind === 'operand_sequence');
 
   if (sequenceParam) {
-    wireLines.push(`${sequenceParam.name}: ${sequenceParam.name}.map((o) => o.handle)`);
+    wireLines.push(`operands: ${sequenceParam.name}.map((o) => o.handle)`);
   } else if (operandParams.length > 0) {
     wireLines.push(
       `operands: [${operandParams.map((p) => `${p.name}.handle`).join(', ')}]`
@@ -513,6 +602,12 @@ function collectOptionTypes(ops) {
 }
 
 function main() {
+  if (!fs.existsSync(idlPath)) {
+    console.error(`webnn.idl not found at ${idlPath}`);
+    console.error('Run: npm run test:wpt:fetch   (or commit packages/webnn-node/idl/webnn.idl)');
+    process.exit(1);
+  }
+
   const idl = fs.readFileSync(idlPath, 'utf8');
   const rawMethods = parseBuilderMethods(idl);
   const skip = new Set(['input', 'constant', 'build']);
@@ -616,6 +711,8 @@ ${ops.map(emitTsMethod).join(',\n\n')}
   fs.writeFileSync(tsOut, tsMethods);
 
   console.log(`Generated ${ops.length} builder ops ->`);
+  console.log(`  IDL: ${path.relative(pkgRoot, idlPath)}`);
+  console.log(`  ${path.relative(pkgRoot, rustOut)}`);
   console.log(`  ${path.relative(pkgRoot, rustOut)}`);
   console.log(`  ${path.relative(pkgRoot, tsOut)}`);
   console.log(`  ${path.relative(pkgRoot, tsTypesOut)}`);

@@ -29,6 +29,8 @@ pub struct BuilderInvokeWire {
     pub sizes: Option<Vec<Value>>,
     pub splits: Option<Vec<u32>>,
     pub split_equal_parts: Option<u32>,
+    pub steps: Option<u32>,
+    pub hidden_size: Option<u32>,
     pub options: Option<Value>,
 }
 
@@ -263,10 +265,11 @@ pub fn constant_from_buffer(
                 .map_err(|e| op_err("constant", e))?
         }
         "float16" => {
-            return Err(nerr(
-                Status::GenericFailure,
-                "float16 constant is not supported yet",
-            ))
+            let values = crate::bytes_to_pod::<u16>(data)?;
+            builder
+                .builder
+                .constant_from_slice(&operand_desc, &values)
+                .map_err(|e| op_err("constant", e))?
         }
         "int32" => {
             let values = crate::bytes_to_pod::<i32>(data)?;

@@ -173,7 +173,7 @@ const generatedBuilderMethods: Record<
   concat(this: BuilderMethodsHost, inputs: MLOperand[], axis: number, options: MLOperatorOptions = {}): MLOperand {
     return this._invokeOp(false, {
       op: 'concat',
-      inputs: inputs.map((o) => o.handle),
+      operands: inputs.map((o) => o.handle),
       axis: axis,
       options: serializeBuilderOptions(options),
     });
@@ -550,11 +550,22 @@ const generatedBuilderMethods: Record<
   },
 
   gru(this: BuilderMethodsHost, input: MLOperand, weight: MLOperand, recurrentWeight: MLOperand, steps: number, hiddenSize: number, options: MLGruOptions = {}): MLOperand[] {
-    throw new Error('MLGraphBuilder.gru is not implemented in rustnn yet');
+    return this._invokeOp(true, {
+      op: 'gru',
+      operands: [input.handle, weight.handle, recurrentWeight.handle],
+      steps: steps,
+      hiddenSize: hiddenSize,
+      options: serializeBuilderOptions(options),
+    });
   },
 
   gruCell(this: BuilderMethodsHost, input: MLOperand, weight: MLOperand, recurrentWeight: MLOperand, hiddenState: MLOperand, hiddenSize: number, options: MLGruCellOptions = {}): MLOperand {
-    throw new Error('MLGraphBuilder.gruCell is not implemented in rustnn yet');
+    return this._invokeOp(false, {
+      op: 'gruCell',
+      operands: [input.handle, weight.handle, recurrentWeight.handle, hiddenState.handle],
+      hiddenSize: hiddenSize,
+      options: serializeBuilderOptions(options),
+    });
   },
 
   hardSigmoid(this: BuilderMethodsHost, input: MLOperand, options: MLHardSigmoidOptions = {}): MLOperand {
@@ -606,11 +617,22 @@ const generatedBuilderMethods: Record<
   },
 
   lstm(this: BuilderMethodsHost, input: MLOperand, weight: MLOperand, recurrentWeight: MLOperand, steps: number, hiddenSize: number, options: MLLstmOptions = {}): MLOperand[] {
-    throw new Error('MLGraphBuilder.lstm is not implemented in rustnn yet');
+    return this._invokeOp(true, {
+      op: 'lstm',
+      operands: [input.handle, weight.handle, recurrentWeight.handle],
+      steps: steps,
+      hiddenSize: hiddenSize,
+      options: serializeBuilderOptions(options),
+    });
   },
 
   lstmCell(this: BuilderMethodsHost, input: MLOperand, weight: MLOperand, recurrentWeight: MLOperand, hiddenState: MLOperand, cellState: MLOperand, hiddenSize: number, options: MLLstmCellOptions = {}): MLOperand[] {
-    throw new Error('MLGraphBuilder.lstmCell is not implemented in rustnn yet');
+    return this._invokeOp(true, {
+      op: 'lstmCell',
+      operands: [input.handle, weight.handle, recurrentWeight.handle, hiddenState.handle, cellState.handle],
+      hiddenSize: hiddenSize,
+      options: serializeBuilderOptions(options),
+    });
   },
 
   matmul(this: BuilderMethodsHost, a: MLOperand, b: MLOperand, options: MLOperatorOptions = {}): MLOperand {
@@ -777,7 +799,11 @@ const generatedBuilderMethods: Record<
   },
 
   scatterElements(this: BuilderMethodsHost, input: MLOperand, indices: MLOperand, updates: MLOperand, options: MLScatterOptions = {}): MLOperand {
-    throw new Error('MLGraphBuilder.scatterElements is not implemented in rustnn yet');
+    return this._invokeOp(false, {
+      op: 'scatterElements',
+      operands: [input.handle, indices.handle, updates.handle],
+      options: serializeBuilderOptions(options),
+    });
   },
 
   scatterND(this: BuilderMethodsHost, input: MLOperand, indices: MLOperand, updates: MLOperand, options: MLOperatorOptions = {}): MLOperand {

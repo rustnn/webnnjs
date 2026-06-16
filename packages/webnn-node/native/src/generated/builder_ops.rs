@@ -448,8 +448,50 @@ pub fn dispatch_builder_op(
                 .map_err(|e| op_err("gemm", e))?;
             Ok(single_result(builder, out)?)
         }
-        "gru" => Err(not_implemented_op("gru")),
-        "gruCell" => Err(not_implemented_op("gruCell")),
+        "gru" => {
+            let input = operand_at(builder, &wire, 0)?;
+            let weight = operand_at(builder, &wire, 1)?;
+            let recurrent_weight = operand_at(builder, &wire, 2)?;
+            let steps = wire.steps.ok_or_else(|| missing_field("gru", "steps"))?;
+            let hidden_size = wire
+                .hidden_size
+                .ok_or_else(|| missing_field("gru", "hiddenSize"))?;
+            let opts: MLGruOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["bias", "recurrentBias", "initialHiddenState"])?)?;
+            let outs = builder
+                .builder
+                .gru_with_options(
+                    input,
+                    weight,
+                    recurrent_weight,
+                    steps,
+                    hidden_size,
+                    opts,
+                )
+                .map_err(|e| op_err("gru", e))?;
+            Ok(multi_result(builder, outs)?)
+        }
+        "gruCell" => {
+            let input = operand_at(builder, &wire, 0)?;
+            let weight = operand_at(builder, &wire, 1)?;
+            let recurrent_weight = operand_at(builder, &wire, 2)?;
+            let hidden_state = operand_at(builder, &wire, 3)?;
+            let hidden_size = wire
+                .hidden_size
+                .ok_or_else(|| missing_field("gruCell", "hiddenSize"))?;
+            let opts: MLGruCellOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["bias", "recurrentBias"])?)?;
+            let out = builder
+                .builder
+                .gru_cell_with_options(
+                    input,
+                    weight,
+                    recurrent_weight,
+                    hidden_state,
+                    hidden_size,
+                    opts,
+                )
+                .map_err(|e| op_err("gruCell", e))?;
+            Ok(single_result(builder, out)?)
+        }
         "hardSigmoid" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLHardSigmoidOptions = parse_options(wire.options.take())?;
@@ -492,8 +534,52 @@ pub fn dispatch_builder_op(
                 .map_err(|e| op_err("linear", e))?;
             Ok(single_result(builder, out)?)
         }
-        "lstm" => Err(not_implemented_op("lstm")),
-        "lstmCell" => Err(not_implemented_op("lstmCell")),
+        "lstm" => {
+            let input = operand_at(builder, &wire, 0)?;
+            let weight = operand_at(builder, &wire, 1)?;
+            let recurrent_weight = operand_at(builder, &wire, 2)?;
+            let steps = wire.steps.ok_or_else(|| missing_field("lstm", "steps"))?;
+            let hidden_size = wire
+                .hidden_size
+                .ok_or_else(|| missing_field("lstm", "hiddenSize"))?;
+            let opts: MLLstmOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["bias", "recurrentBias", "peepholeWeight", "initialHiddenState", "initialCellState"])?)?;
+            let outs = builder
+                .builder
+                .lstm_with_options(
+                    input,
+                    weight,
+                    recurrent_weight,
+                    steps,
+                    hidden_size,
+                    opts,
+                )
+                .map_err(|e| op_err("lstm", e))?;
+            Ok(multi_result(builder, outs)?)
+        }
+        "lstmCell" => {
+            let input = operand_at(builder, &wire, 0)?;
+            let weight = operand_at(builder, &wire, 1)?;
+            let recurrent_weight = operand_at(builder, &wire, 2)?;
+            let hidden_state = operand_at(builder, &wire, 3)?;
+            let cell_state = operand_at(builder, &wire, 4)?;
+            let hidden_size = wire
+                .hidden_size
+                .ok_or_else(|| missing_field("lstmCell", "hiddenSize"))?;
+            let opts: MLLstmCellOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["bias", "recurrentBias", "peepholeWeight"])?)?;
+            let outs = builder
+                .builder
+                .lstm_cell_with_options(
+                    input,
+                    weight,
+                    recurrent_weight,
+                    hidden_state,
+                    cell_state,
+                    hidden_size,
+                    opts,
+                )
+                .map_err(|e| op_err("lstmCell", e))?;
+            Ok(multi_result(builder, outs)?)
+        }
         "matmul" => {
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
@@ -647,7 +733,15 @@ pub fn dispatch_builder_op(
                 .map_err(|e| op_err("reverse", e))?;
             Ok(single_result(builder, out)?)
         }
-        "scatterElements" => Err(not_implemented_op("scatterElements")),
+        "scatterElements" => {
+            let a = operand_at(builder, &wire, 0)?;
+            let b = operand_at(builder, &wire, 1)?;
+            let c = operand_at(builder, &wire, 2)?;
+            let opts: MLScatterOptions = parse_options(wire.options.take())?;
+            let out = builder.builder.scatter_elements_with_options(a, b, c, opts)
+                .map_err(|e| op_err("scatterElements", e))?;
+            Ok(single_result(builder, out)?)
+        }
         "scatterND" => {
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;

@@ -87,6 +87,23 @@ function bufferFromArrayBufferView(data: ArrayBufferView): Buffer {
   return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
 }
 
+type Float16ArrayConstructor = new (
+  buffer?: ArrayBuffer,
+  byteOffset?: number,
+  length?: number
+) => ArrayBufferView;
+
+function float16ArrayCtor(): Float16ArrayConstructor {
+  const ctor = (globalThis as { Float16Array?: Float16ArrayConstructor }).Float16Array;
+  return ctor ?? (Uint16Array as unknown as Float16ArrayConstructor);
+}
+
+function float16ArrayFromBuffer(buffer: Buffer): ArrayBufferView {
+  const Ctor = float16ArrayCtor();
+  const length = Math.floor(buffer.byteLength / 2);
+  return new Ctor(buffer.buffer as ArrayBuffer, buffer.byteOffset, length);
+}
+
 function typedArrayFromBuffer(
   buffer: Buffer,
   dataType: MLOperandDataType
@@ -95,14 +112,14 @@ function typedArrayFromBuffer(
     switch (dataType) {
       case 'float32':
         return new Float32Array();
+      case 'float16':
+        return new (float16ArrayCtor())();
       case 'int64':
         return new BigInt64Array();
       case 'int32':
         return new Int32Array();
       case 'uint32':
         return new Uint32Array();
-      case 'float16':
-        throw new TypeError('float16 readTensor is not supported yet');
       default:
         return new Uint8Array();
     }
@@ -115,6 +132,8 @@ function typedArrayFromBuffer(
         buffer.byteOffset,
         Math.floor(buffer.byteLength / 4)
       );
+    case 'float16':
+      return float16ArrayFromBuffer(buffer);
     case 'int64':
       return new BigInt64Array(
         buffer.buffer,
@@ -134,7 +153,7 @@ function typedArrayFromBuffer(
         Math.floor(buffer.byteLength / 4)
       );
     case 'uint64':
-      return new BigInt64Array(
+      return new BigUint64Array(
         buffer.buffer,
         buffer.byteOffset,
         Math.floor(buffer.byteLength / 8)
@@ -143,8 +162,6 @@ function typedArrayFromBuffer(
       return new Int8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     case 'uint8':
       return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-    case 'float16':
-      throw new TypeError('float16 readTensor is not supported yet');
     default:
       throw new TypeError(`unsupported readTensor dataType: ${dataType}`);
   }
