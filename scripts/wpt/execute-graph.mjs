@@ -1,4 +1,9 @@
-import { packConstantBuffer, shouldInlineConstant } from './pack-constants.mjs';
+import {
+  packConstantBuffer,
+  shouldInlineConstant,
+  unpackInt4,
+  unpackUint4
+} from './pack-constants.mjs';
 
 const POOL2D_LIKE_OPS = new Set([
   'averagePool2d',
@@ -117,12 +122,19 @@ function buildMethodArgs(opName, wptArguments, operandMap, operandNames) {
   return callArgs;
 }
 
-function typedArrayToPlainData(typed, dataType) {
+function shapeElementCount(shape) {
+  if (!shape || shape.length === 0) return 1;
+  return shape.reduce((a, b) => a * b, 1);
+}
+
+function typedArrayToPlainData(typed, dataType, shape) {
   if (dataType === 'int4') {
-    return Array.from(new Int8Array(typed.buffer, typed.byteOffset, typed.byteLength), (v) => v);
+    const bytes = new Uint8Array(typed.buffer, typed.byteOffset, typed.byteLength);
+    return unpackInt4(bytes, shapeElementCount(shape));
   }
   if (dataType === 'uint4') {
-    return Array.from(typed);
+    const bytes = new Uint8Array(typed.buffer, typed.byteOffset, typed.byteLength);
+    return unpackUint4(bytes, shapeElementCount(shape));
   }
   if (dataType === 'uint64') {
     return Array.from(typed, (v) => (typeof v === 'bigint' ? v : BigInt(v)).toString());
@@ -279,12 +291,16 @@ export async function executeGraphResources(context, graphResources) {
       let data;
       try {
         const typed = await context.readTensorTyped(tensor);
-        data = typedArrayToPlainData(typed, expected.descriptor.dataType);
+        data = typedArrayToPlainData(typed, expected.descriptor.dataType, expected.descriptor.shape);
       } catch (err) {
         const buffer = Buffer.from(await context.readTensor(tensor));
         const Ctor = typedArrayCtor(expected.descriptor.dataType);
         const typed = new Ctor(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-        data = typedArrayToPlainData(typed, expected.descriptor.dataType);
+        data = typedArrayToPlainData(
+          typed,
+          expected.descriptor.dataType,
+          expected.descriptor.shape
+        );
       }
       outputs[name] = {
         descriptor: {

@@ -19,6 +19,19 @@ function bytesPerElement(dataType) {
   }
 }
 
+/** rustnn packed int4/uint4 storage: even indices in high nibble, odd in low. */
+export function packedStorageByteLength(elements) {
+  const n = Math.max(1, elements);
+  return Math.max(1, (4 * n + 7) >> 3);
+}
+
+function storageByteCount(dataType, elementCount) {
+  if (dataType === 'int4' || dataType === 'uint4') {
+    return packedStorageByteLength(elementCount);
+  }
+  return Math.max(1, elementCount) * bytesPerElement(dataType);
+}
+
 function constantRawLength(raw) {
   if (Array.isArray(raw)) return raw.length;
   return raw == null ? 0 : 1;
@@ -36,7 +49,7 @@ export function shouldInlineConstant(input) {
   const shape = input?.descriptor?.shape ?? [];
   const rawLen = constantRawLength(input.data);
   const scalarFillLike = rawLen <= 1;
-  const estBytes = Math.max(1, shapeElementCount(shape)) * bytesPerElement(dt);
+  const estBytes = storageByteCount(dt, shapeElementCount(shape));
   return !(scalarFillLike && estBytes >= LARGE_SCALAR_INLINE_BYTES_THRESHOLD);
 }
 
@@ -54,9 +67,70 @@ function parseNumericLoose(v) {
   return Number(v);
 }
 
+function int4Nibble(value) {
+  const v = Math.trunc(parseNumericLoose(value));
+  return Math.max(-8, Math.min(7, v)) & 0x0f;
+}
+
+function uint4Nibble(value) {
+  const v = Math.trunc(parseNumericLoose(value));
+  return Math.max(0, Math.min(15, v)) & 0x0f;
+}
+
+/** @param {ArrayLike<number>} values */
+export function packInt4(values) {
+  const n = values.length;
+  const out = new Uint8Array(packedStorageByteLength(n));
+  for (let i = 0; i < n; i++) {
+    const nibble = int4Nibble(values[i]);
+    if (i % 2 === 0) {
+      out[i >> 1] = nibble << 4;
+    } else {
+      out[i >> 1] |= nibble;
+    }
+  }
+  return out;
+}
+
+/** @param {ArrayLike<number>} values */
+export function packUint4(values) {
+  const n = values.length;
+  const out = new Uint8Array(packedStorageByteLength(n));
+  for (let i = 0; i < n; i++) {
+    const nibble = uint4Nibble(values[i]);
+    if (i % 2 === 0) {
+      out[i >> 1] = nibble << 4;
+    } else {
+      out[i >> 1] |= nibble;
+    }
+  }
+  return out;
+}
+
+/** @param {Uint8Array} data */
+export function unpackInt4(data, elementCount) {
+  const out = new Array(elementCount);
+  for (let i = 0; i < elementCount; i++) {
+    const byte = data[i >> 1] ?? 0;
+    const nibble = i % 2 === 0 ? (byte >> 4) & 0x0f : byte & 0x0f;
+    out[i] = nibble >= 8 ? nibble - 16 : nibble;
+  }
+  return out;
+}
+
+/** @param {Uint8Array} data */
+export function unpackUint4(data, elementCount) {
+  const out = new Array(elementCount);
+  for (let i = 0; i < elementCount; i++) {
+    const byte = data[i >> 1] ?? 0;
+    out[i] = i % 2 === 0 ? (byte >> 4) & 0x0f : byte & 0x0f;
+  }
+  return out;
+}
+
 /**
  * Pack WPT tensor values to a typed array for MLGraphBuilder.constant() / writeTensor().
- * rustnn convention: int4/uint4 use one logical value per byte (not WPT browser nibble packing).
+ * int4/uint4 use rustnn nibble packing (two logical values per byte).
  * @param {{ descriptor: { dataType: string, shape: number[] }, data?: unknown }} input
  * @returns {ArrayBufferView}
  */
@@ -95,12 +169,20 @@ export function packConstantBuffer(input) {
       for (let i = 0; i < n; i++) ta[i] = parseNumericLoose(getNorm(i)) | 0;
       return ta;
     }
-    case 'uint8':
-    case 'uint4':
-    case 'int4': {
+    case 'uint8': {
       const out = new Uint8Array(n);
       for (let i = 0; i < n; i++) out[i] = parseNumericLoose(getNorm(i)) & 0xff;
       return out;
+    }
+    case 'int4': {
+      const values = new Array(n);
+      for (let i = 0; i < n; i++) values[i] = parseNumericLoose(getNorm(i));
+      return packInt4(values);
+    }
+    case 'uint4': {
+      const values = new Array(n);
+      for (let i = 0; i < n; i++) values[i] = parseNumericLoose(getNorm(i));
+      return packUint4(values);
     }
     case 'int32': {
       const ta = new Int32Array(n);
