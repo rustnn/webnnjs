@@ -55,13 +55,6 @@ pub fn missing_field(op: &str, field: &str) -> Error {
     )
 }
 
-pub fn not_implemented_op(op: &str) -> Error {
-    nerr(
-        Status::GenericFailure,
-        format!("MLGraphBuilder.{op} is not implemented in rustnn yet"),
-    )
-}
-
 pub fn op_err(op: &str, err: impl std::fmt::Display) -> Error {
     nerr(
         Status::GenericFailure,
@@ -182,7 +175,7 @@ fn infer_operand_wire(
         .rustnn_operand_data_type(operand)
         .map_err(|e| op_err("operand", e))?;
     let data_type_str = ml_operand_dtype_to_string(data_type);
-    let handle = register_operand_inferred(builder, operand, data_type_str.clone(), shape.clone());
+    let handle = register_operand_inferred(builder, operand);
     Ok(InvokeOperandWire {
         handle,
         data_type: data_type_str,

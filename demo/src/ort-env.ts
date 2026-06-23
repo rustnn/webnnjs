@@ -74,4 +74,8 @@ export function ensureOrtDylibPath(): void {
       }
     }
   }
+
+  throw new Error(
+    'ONNX Runtime library not found. Set ORT_DYLIB_PATH or ORT_LIB_DIR in demo/.env or your environment.'
+  );
 }

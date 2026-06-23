@@ -80,7 +80,7 @@ rustnn v0.5.11 (C:\git\rustnn-workspace\rustnn)
 
 Alternatively, set `ORT_LIB_DIR` to a directory that contains the library.
 
-Both demos read `demo/.env` via `node --env-file=.env`. Copy or edit that file for your machine:
+Both demos load `demo/.env` when present. You need either `ORT_DYLIB_PATH` in your environment or a `demo/.env` file (copy or edit for your machine):
 
 ```env
 ORT_DYLIB_PATH=C:\git\rustnn-workspace\onnxruntime.dll
@@ -150,8 +150,8 @@ npm run test:wpt:fetch
 This runs `scripts/fetch-wpt.mjs`, which:
 
 1. Creates `.cache/` if needed
-2. On first run: `git clone --depth 1` of `https://github.com/web-platform-tests/wpt.git` → `.cache/wpt`
-3. On later runs: `git fetch` + `reset --hard origin/master`
+2. On first run: shallow sparse clone (`--depth 1`, `--filter=blob:none`) of only `interfaces/` and `webnn/` → `.cache/wpt`
+3. On later runs: `git fetch` + `reset --hard origin/master` (same sparse paths; no full ~160k-file checkout)
 
 Override the location with `WPT_DIR` (same as rustnnpt).
 

@@ -358,13 +358,7 @@ async function main(): Promise<void> {
   installWebNNPolyfill();
   ensureOrtDylibPath();
 
-  if (process.env.ORT_DYLIB_PATH) {
-    console.log(`Using ORT_DYLIB_PATH=${process.env.ORT_DYLIB_PATH}`);
-  } else {
-    console.log(
-      'ORT_DYLIB_PATH not found automatically; set ORT_DYLIB_PATH or ORT_LIB_DIR if loading fails'
-    );
-  }
+  console.log(`Using ORT_DYLIB_PATH=${process.env.ORT_DYLIB_PATH}`);
 
   const { context, graph, meta, snapshotPath } = await ml.loadModelFromHub(REPO_ID, {
     accelerated: true,

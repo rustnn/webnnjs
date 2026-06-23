@@ -62,10 +62,6 @@ pub struct NativeModelLoadResult {
 
 struct GraphEntry {
     graph: MLGraph<'static>,
-    input_names: Vec<String>,
-    output_names: Vec<String>,
-    inputs: HashMap<String, LoadTensorMeta>,
-    outputs: HashMap<String, LoadTensorMeta>,
 }
 
 pub(crate) struct BuilderEntry {
@@ -77,8 +73,6 @@ pub(crate) struct BuilderEntry {
 
 #[derive(Debug, Clone)]
 pub(crate) struct OperandWireMeta {
-    data_type: String,
-    shape: Vec<u64>,
     rustnn_id: u32,
 }
 
@@ -419,19 +413,13 @@ pub(crate) fn register_operand(
 pub(crate) fn register_operand_inferred(
     builder: &mut BuilderEntry,
     operand: MLOperand,
-    data_type: String,
-    shape: Vec<u64>,
 ) -> u32 {
     let rustnn_id = builder.next_rustnn_operand_id;
     builder.next_rustnn_operand_id = builder.next_rustnn_operand_id.saturating_add(1);
     register_operand(
         builder,
         operand,
-        OperandWireMeta {
-            data_type,
-            shape,
-            rustnn_id,
-        },
+        OperandWireMeta { rustnn_id },
     )
 }
 
@@ -676,11 +664,6 @@ pub fn builder_input(
     let descriptor: TensorDescriptorWire =
         parse_json(&descriptor_json, "builderInput descriptor")?;
     let operand_desc = operand_descriptor(&descriptor)?;
-    let meta = OperandWireMeta {
-        data_type: descriptor.data_type.clone(),
-        shape: descriptor.shape.clone(),
-        rustnn_id: 0,
-    };
 
     with_builder(builder_handle, |builder| {
         let operand = builder
@@ -689,11 +672,11 @@ pub fn builder_input(
             .map_err(|e| nerr(Status::GenericFailure, format!("builder.input failed: {e}")))?;
         let rustnn_id = builder.next_rustnn_operand_id;
         builder.next_rustnn_operand_id = builder.next_rustnn_operand_id.saturating_add(1);
-        let meta = OperandWireMeta {
-            rustnn_id,
-            ..meta
-        };
-        Ok(register_operand(builder, operand, meta))
+        Ok(register_operand(
+            builder,
+            operand,
+            OperandWireMeta { rustnn_id },
+        ))
     })
 }
 
@@ -770,50 +753,9 @@ pub async fn builder_build(
                 )
             })?;
 
-            let input_names = graph
-                .input_descriptors
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>();
-            let output_names = graph
-                .output_descriptors
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>();
-
-            let mut inputs = HashMap::new();
-            for (name, desc) in &graph.input_descriptors {
-                inputs.insert(
-                    name.clone(),
-                    LoadTensorMeta {
-                        data_type: rustnn_dtype_to_string(desc.data_type),
-                        shape: descriptor_shape(desc),
-                    },
-                );
-            }
-            let mut outputs = HashMap::new();
-            for (name, desc) in &graph.output_descriptors {
-                outputs.insert(
-                    name.clone(),
-                    LoadTensorMeta {
-                        data_type: rustnn_dtype_to_string(desc.data_type),
-                        shape: descriptor_shape(desc),
-                    },
-                );
-            }
-
             let graph_handle = session.next_graph_handle;
             session.next_graph_handle = session.next_graph_handle.saturating_add(1);
-            session.graphs.insert(
-                graph_handle,
-                GraphEntry {
-                    graph,
-                    input_names,
-                    output_names,
-                    inputs,
-                    outputs,
-                },
-            );
+            session.graphs.insert(graph_handle, GraphEntry { graph });
             Ok(graph_handle)
         })
     })
@@ -1022,16 +964,7 @@ pub async fn load_webnn_model(context_handle: u32, path_or_dir: String) -> Resul
 
             let graph_handle = session.next_graph_handle;
             session.next_graph_handle = session.next_graph_handle.saturating_add(1);
-            session.graphs.insert(
-                graph_handle,
-                GraphEntry {
-                    graph,
-                    input_names: meta.input_names.clone(),
-                    output_names: meta.output_names.clone(),
-                    inputs: meta.inputs.clone(),
-                    outputs: meta.outputs.clone(),
-                },
-            );
+            session.graphs.insert(graph_handle, GraphEntry { graph });
 
             let meta_json = serde_json::to_string(&meta).map_err(|e| {
                 nerr(
