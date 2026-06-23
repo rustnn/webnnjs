@@ -1,129 +1,46 @@
 import {
+  MLContext,
+  MLGraph,
   MLTensor,
   installWebNNPolyfill,
   ml,
-  type LoadModelTensorMeta,
+  type LoadedModelMeta,
+  type MLOperandDataType,
 } from '@webnnjs/webnn-node';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+
+import { findFileRecursive } from './fs-utils.js';
+import { ensureOrtDylibPath } from './ort-env.js';
 
 const REPO_ID = 'tarekziade/SmolLM-135M-webnn';
 const PROMPT_TEXT = process.env.DEMO_PROMPT ?? 'Once upon a time';
 const MAX_NEW_TOKENS = Number(process.env.DEMO_MAX_NEW_TOKENS ?? '24');
 
-type KvTensorInfo = {
-  name: string;
-  layer: number;
-  kind: 'key' | 'value';
-};
-
 type KvLayout = {
   numHeads: number;
   headDim: number;
   layerCount: number;
-  pastInputs: KvTensorInfo[];
-  presentOutputs: KvTensorInfo[];
+  maxCacheLen: number;
+  logitsName: string;
+  vocabSize: number;
 };
 
 type StepState = {
   position: number;
-  pastLength: number;
-  kvCache: Map<string, Float32Array<ArrayBufferLike>>;
+  cache: Map<string, Float32Array>;
 };
 
-function findFileRecursive(
-  rootDir: string,
-  targetFileName: string,
-  maxDepth: number
-): string | undefined {
-  if (maxDepth < 0 || !fs.existsSync(rootDir)) {
-    return undefined;
-  }
-
-  const entries = fs.readdirSync(rootDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(rootDir, entry.name);
-    if (entry.isFile() && entry.name === targetFileName) {
-      return fullPath;
-    }
-    if (entry.isDirectory()) {
-      const nested = findFileRecursive(fullPath, targetFileName, maxDepth - 1);
-      if (nested) {
-        return nested;
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function ensureOrtDylibPath(): void {
-  if (process.env.ORT_DYLIB_PATH && fs.existsSync(process.env.ORT_DYLIB_PATH)) {
-    return;
-  }
-
-  const libraryNames =
-    process.platform === 'darwin'
-      ? ['libonnxruntime.dylib']
-      : process.platform === 'linux'
-      ? ['libonnxruntime.so']
-      : process.platform === 'win32'
-      ? ['onnxruntime.dll']
-      : ['libonnxruntime.dylib', 'libonnxruntime.so', 'onnxruntime.dll'];
-
-  const ortLibDirs = (process.env.ORT_LIB_DIR ?? '')
-    .split(path.delimiter)
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
-  const commonRoots = [
-    path.resolve(process.cwd(), 'onnxruntime'),
-    path.resolve(process.cwd(), 'onnxruntime/lib'),
-    path.resolve(process.cwd(), 'target/onnxruntime'),
-    path.resolve(process.cwd(), 'target/onnxruntime/lib'),
-    path.resolve(process.cwd(), '../target/onnxruntime'),
-    path.resolve(process.cwd(), '../target/onnxruntime/lib'),
-    path.resolve(process.cwd(), '../../target/onnxruntime'),
-    path.resolve(process.cwd(), '../../target/onnxruntime/lib'),
-    path.resolve(process.cwd(), 'node_modules/onnxruntime-node'),
-    path.resolve(process.cwd(), 'node_modules/onnxruntime-node/bin'),
-    path.resolve(process.cwd(), '../node_modules/onnxruntime-node'),
-    path.resolve(process.cwd(), '../node_modules/onnxruntime-node/bin'),
-    '/usr/local/lib',
-    '/usr/lib',
-    '/opt/homebrew/lib',
-    '/opt/onnxruntime/lib',
-    '/usr/local/onnxruntime/lib',
-    home ? path.join(home, '.local', 'lib') : '',
-  ]
-    .filter((entry) => entry.length > 0)
-    .filter((entry, index, entries) => entries.indexOf(entry) === index);
-
-  const roots = [...ortLibDirs, ...commonRoots];
-
-  for (const root of roots) {
-    for (const libraryName of libraryNames) {
-      const direct = path.join(root, libraryName);
-      if (fs.existsSync(direct)) {
-        process.env.ORT_DYLIB_PATH = direct;
-        return;
-      }
-      const discovered = findFileRecursive(root, libraryName, 8);
-      if (discovered) {
-        process.env.ORT_DYLIB_PATH = discovered;
-        return;
-      }
-    }
-  }
-}
-
-function checkedElementCount(shape: number[]): number {
-  if (shape.length === 0) {
-    return 1;
-  }
-  return shape.reduce((acc, dim) => acc * dim, 1);
-}
+type StepTensors = {
+  inputIds: MLTensor;
+  positionIds: MLTensor;
+  attentionMask: MLTensor;
+  pastK: MLTensor[];
+  pastV: MLTensor[];
+  presentK: MLTensor[];
+  presentV: MLTensor[];
+  logits: MLTensor;
+};
 
 function findTokenizerPath(snapshotPath: string): string {
   const direct = path.join(snapshotPath, 'tokenizer.json');
@@ -138,86 +55,180 @@ function findTokenizerPath(snapshotPath: string): string {
   return discovered;
 }
 
-function parseKvName(
-  name: string,
-  prefix: 'past_key_values_' | 'present_'
-): KvTensorInfo | undefined {
-  if (!name.startsWith(prefix)) {
-    return undefined;
-  }
+function detectLayout(meta: LoadedModelMeta): KvLayout {
+  let numLayers = 0;
+  let numHeads: number | undefined;
+  let maxCacheLen: number | undefined;
+  let headDim: number | undefined;
+  let logitsName: string | undefined;
+  let vocabSize: number | undefined;
 
-  const suffix = name.slice(prefix.length);
-  const match = suffix.match(/^(\d+)_(key|value)$/);
-  if (!match) {
-    return undefined;
-  }
-
-  return {
-    name,
-    layer: Number(match[1]),
-    kind: match[2] as 'key' | 'value',
-  };
-}
-
-function detectKvLayout(meta: {
-  inputNames: string[];
-  outputNames: string[];
-  inputs: Record<string, LoadModelTensorMeta>;
-}): KvLayout {
-  const pastInputs: KvTensorInfo[] = [];
-  const presentOutputs: KvTensorInfo[] = [];
-
-  for (const name of meta.inputNames) {
-    const parsed = parseKvName(name, 'past_key_values_');
-    if (parsed) {
-      pastInputs.push(parsed);
+  for (const [name, desc] of Object.entries(meta.inputs)) {
+    if (name.startsWith('past_key_values_')) {
+      const layer = Number(name.split('_')[3]);
+      if (Number.isFinite(layer)) {
+        numLayers = Math.max(numLayers, layer + 1);
+      }
+      if (desc.shape.length === 4) {
+        numHeads = desc.shape[1];
+        maxCacheLen = desc.shape[2];
+        headDim = desc.shape[3];
+      }
     }
   }
 
-  for (const name of meta.outputNames) {
-    const parsed = parseKvName(name, 'present_');
-    if (parsed) {
-      presentOutputs.push(parsed);
+  for (const [name, desc] of Object.entries(meta.outputs)) {
+    if (name.toLowerCase().includes('logits')) {
+      logitsName = name;
+      if (desc.shape.length > 0) {
+        vocabSize = desc.shape[desc.shape.length - 1];
+      }
     }
   }
 
-  if (pastInputs.length === 0 || presentOutputs.length === 0) {
-    throw new Error('Model metadata does not expose expected KV cache inputs/outputs');
+  if (
+    numLayers === 0 ||
+    numHeads === undefined ||
+    maxCacheLen === undefined ||
+    headDim === undefined ||
+    !logitsName ||
+    !vocabSize
+  ) {
+    throw new Error('Unable to infer SmolLM layout from loaded model metadata');
   }
-
-  const firstPastMeta = meta.inputs[pastInputs[0].name];
-  if (!firstPastMeta || firstPastMeta.shape.length < 4) {
-    throw new Error('Unable to infer KV layout from past_key_values metadata');
-  }
-
-  const numHeads = Math.max(1, firstPastMeta.shape[1] ?? 1);
-  const headDim = Math.max(1, firstPastMeta.shape[3] ?? 1);
-  const maxLayer = Math.max(...pastInputs.map((entry) => entry.layer));
 
   return {
     numHeads,
     headDim,
-    layerCount: maxLayer + 1,
-    pastInputs,
-    presentOutputs,
+    layerCount: numLayers,
+    maxCacheLen,
+    logitsName,
+    vocabSize,
   };
 }
 
-async function createAndFillTensor(
-  context: Awaited<ReturnType<typeof ml.createContext>>,
+async function makeTensor(
+  context: MLContext,
+  dataType: MLOperandDataType,
   shape: number[],
-  values: Float32Array<ArrayBufferLike>
+  readable: boolean,
+  writable: boolean
 ): Promise<MLTensor> {
-  const tensor = await context.createTensor({ dataType: 'float32', shape });
-  context.writeTensor(tensor, values);
-  return tensor;
+  return context.createTensor({
+    dataType,
+    shape,
+    readable,
+    writable,
+  });
 }
 
-function argmax(values: Float32Array<ArrayBufferLike>): number {
-  if (values.length === 0) {
-    throw new Error('Cannot argmax empty logits tensor');
+async function initStepTensors(
+  context: MLContext,
+  layout: KvLayout
+): Promise<StepTensors> {
+  const h = layout.numHeads;
+  const d = layout.headDim;
+  const maxSeq = layout.maxCacheLen;
+  const maxPast = Math.max(0, layout.maxCacheLen - 1);
+
+  const inputIds = await makeTensor(context, 'int64', [1, 1], false, true);
+  const positionIds = await makeTensor(context, 'int64', [1, 1], false, true);
+  const attentionMask = await makeTensor(context, 'int64', [1, 1], false, true);
+  context.rustnnSetTensorCapacity(attentionMask, [1, maxSeq]);
+
+  const pastK: MLTensor[] = [];
+  const pastV: MLTensor[] = [];
+  const presentK: MLTensor[] = [];
+  const presentV: MLTensor[] = [];
+
+  for (let layer = 0; layer < layout.layerCount; layer += 1) {
+    const pk = await makeTensor(context, 'float32', [1, h, 0, d], false, true);
+    context.rustnnSetTensorCapacity(pk, [1, h, maxPast, d]);
+    pastK.push(pk);
+
+    const pv = await makeTensor(context, 'float32', [1, h, 0, d], false, true);
+    context.rustnnSetTensorCapacity(pv, [1, h, maxPast, d]);
+    pastV.push(pv);
+
+    const prk = await makeTensor(context, 'float32', [1, h, 1, d], true, false);
+    context.rustnnSetTensorCapacity(prk, [1, h, maxSeq, d]);
+    presentK.push(prk);
+
+    const prv = await makeTensor(context, 'float32', [1, h, 1, d], true, false);
+    context.rustnnSetTensorCapacity(prv, [1, h, maxSeq, d]);
+    presentV.push(prv);
   }
 
+  const logitsShape = [1, 1, layout.vocabSize];
+  const logits = await makeTensor(context, 'float32', logitsShape, true, false);
+
+  return {
+    inputIds,
+    positionIds,
+    attentionMask,
+    pastK,
+    pastV,
+    presentK,
+    presentV,
+    logits,
+  };
+}
+
+function initState(layout: KvLayout): StepState {
+  const cache = new Map<string, Float32Array>();
+  const elems = layout.numHeads * layout.maxCacheLen * layout.headDim;
+  for (let layer = 0; layer < layout.layerCount; layer += 1) {
+    cache.set(`past_key_values_${layer}_key`, new Float32Array(elems));
+    cache.set(`past_key_values_${layer}_value`, new Float32Array(elems));
+  }
+  return { position: 0, cache };
+}
+
+function compactKv(
+  state: StepState,
+  layout: KvLayout,
+  layer: number,
+  kind: 'key' | 'value',
+  pastLen: number
+): Float32Array {
+  if (pastLen === 0) {
+    return new Float32Array();
+  }
+  const cache = state.cache.get(`past_key_values_${layer}_${kind}`);
+  if (!cache) {
+    throw new Error(`Missing KV cache for layer ${layer} ${kind}`);
+  }
+  const out = new Float32Array(layout.numHeads * pastLen * layout.headDim);
+  for (let h = 0; h < layout.numHeads; h += 1) {
+    for (let t = 0; t < pastLen; t += 1) {
+      const src = (h * layout.maxCacheLen + t) * layout.headDim;
+      const dst = (h * pastLen + t) * layout.headDim;
+      out.set(cache.subarray(src, src + layout.headDim), dst);
+    }
+  }
+  return out;
+}
+
+function storePresent(
+  state: StepState,
+  layout: KvLayout,
+  layer: number,
+  kind: 'key' | 'value',
+  present: Float32Array,
+  seqLen: number
+): void {
+  const cache = state.cache.get(`past_key_values_${layer}_${kind}`);
+  if (!cache) {
+    throw new Error(`Missing KV cache for layer ${layer} ${kind}`);
+  }
+  for (let h = 0; h < layout.numHeads; h += 1) {
+    const dst = (h * layout.maxCacheLen + state.position) * layout.headDim;
+    const src = (h * seqLen + (seqLen - 1)) * layout.headDim;
+    cache.set(present.subarray(src, src + layout.headDim), dst);
+  }
+}
+
+function argmax(values: Float32Array): number {
   let bestIndex = 0;
   let bestValue = Number.NEGATIVE_INFINITY;
   for (let i = 0; i < values.length; i += 1) {
@@ -229,108 +240,80 @@ function argmax(values: Float32Array<ArrayBufferLike>): number {
   return bestIndex;
 }
 
-async function runGenerationStep(args: {
-  context: Awaited<ReturnType<typeof ml.createContext>>;
-  graph: { dispatch: (inputs: Record<string, MLTensor>, outputs: Record<string, MLTensor>) => void };
-  modelMeta: {
-    inputNames: string[];
-    outputNames: string[];
-  };
-  kvLayout: KvLayout;
+async function runStep(args: {
+  context: MLContext;
+  graph: MLGraph;
+  layout: KvLayout;
+  tensors: StepTensors;
   state: StepState;
   tokenId: number;
-}): Promise<Float32Array<ArrayBufferLike>> {
-  const { context, graph, modelMeta, kvLayout, state, tokenId } = args;
+}): Promise<number> {
+  const { context, graph, layout, tensors, state, tokenId } = args;
+  const pastLen = state.position;
+  const seqLen = pastLen + 1;
+  const h = layout.numHeads;
+  const d = layout.headDim;
 
-  const inputTensors: Record<string, MLTensor> = {};
-  const outputTensors: Record<string, MLTensor> = {};
+  context.rustnnResizeTensor(tensors.attentionMask, [1, seqLen]);
+  for (let layer = 0; layer < layout.layerCount; layer += 1) {
+    context.rustnnResizeTensor(tensors.pastK[layer], [1, h, pastLen, d]);
+    context.rustnnResizeTensor(tensors.pastV[layer], [1, h, pastLen, d]);
+    context.rustnnResizeTensor(tensors.presentK[layer], [1, h, seqLen, d]);
+    context.rustnnResizeTensor(tensors.presentV[layer], [1, h, seqLen, d]);
+  }
 
-  try {
-    for (const inputName of modelMeta.inputNames) {
-      if (inputName === 'input_ids') {
-        inputTensors[inputName] = await createAndFillTensor(
-          context,
-          [1, 1],
-          new Float32Array([tokenId])
-        );
-      } else if (inputName === 'position_ids') {
-        inputTensors[inputName] = await createAndFillTensor(
-          context,
-          [1, 1],
-          new Float32Array([state.position])
-        );
-      } else if (inputName === 'attention_mask') {
-        const length = state.pastLength + 1;
-        inputTensors[inputName] = await createAndFillTensor(
-          context,
-          [1, length],
-          new Float32Array(length).fill(1)
-        );
-      } else {
-        const kv = parseKvName(inputName, 'past_key_values_');
-        if (!kv) {
-          throw new Error(`Unsupported model input for demo generation: ${inputName}`);
-        }
+  context.writeTensor(tensors.inputIds, new BigInt64Array([BigInt(tokenId)]));
+  context.writeTensor(tensors.positionIds, new BigInt64Array([BigInt(pastLen)]));
+  context.writeTensor(tensors.attentionMask, new BigInt64Array(Array(seqLen).fill(1n)));
 
-        const shape = [1, kvLayout.numHeads, state.pastLength, kvLayout.headDim];
-        const expected = checkedElementCount(shape);
-        const cached = state.kvCache.get(inputName) ?? new Float32Array(expected);
-
-        if (cached.length !== expected) {
-          throw new Error(
-            `KV cache size mismatch for ${inputName}: expected ${expected}, got ${cached.length}`
-          );
-        }
-
-        inputTensors[inputName] = await createAndFillTensor(context, shape, cached);
-      }
+  for (let layer = 0; layer < layout.layerCount; layer += 1) {
+    const kData = compactKv(state, layout, layer, 'key', pastLen);
+    if (kData.length > 0) {
+      context.writeTensor(tensors.pastK[layer], kData);
     }
-
-    const logitsName =
-      modelMeta.outputNames.find((name) => name.toLowerCase().includes('logits')) ??
-      modelMeta.outputNames[0];
-    if (!logitsName) {
-      throw new Error('No output tensor found for logits');
-    }
-
-    outputTensors[logitsName] = await context.createTensor({
-      dataType: 'float32',
-      shape: [1],
-    });
-
-    for (const kvOut of kvLayout.presentOutputs) {
-      outputTensors[kvOut.name] = await context.createTensor({
-        dataType: 'float32',
-        shape: [1],
-      });
-    }
-
-    graph.dispatch(inputTensors, outputTensors);
-
-    const logits = await context.readTensor(outputTensors[logitsName]);
-
-    let nextPastLength = state.pastLength;
-    for (const kvOut of kvLayout.presentOutputs) {
-      const values = await context.readTensor(outputTensors[kvOut.name]);
-      const perToken = kvLayout.numHeads * kvLayout.headDim;
-      const seqLen = perToken === 0 ? 0 : Math.floor(values.length / perToken);
-      const cacheName = `past_key_values_${kvOut.layer}_${kvOut.kind}`;
-      state.kvCache.set(cacheName, values);
-      nextPastLength = Math.max(nextPastLength, seqLen);
-    }
-
-    state.pastLength = nextPastLength;
-    state.position += 1;
-
-    return logits;
-  } finally {
-    for (const tensor of Object.values(inputTensors)) {
-      tensor.destroy();
-    }
-    for (const tensor of Object.values(outputTensors)) {
-      tensor.destroy();
+    const vData = compactKv(state, layout, layer, 'value', pastLen);
+    if (vData.length > 0) {
+      context.writeTensor(tensors.pastV[layer], vData);
     }
   }
+
+  const inputs: Record<string, MLTensor> = {
+    input_ids: tensors.inputIds,
+    position_ids: tensors.positionIds,
+    attention_mask: tensors.attentionMask,
+  };
+  for (let layer = 0; layer < layout.layerCount; layer += 1) {
+    inputs[`past_key_values_${layer}_key`] = tensors.pastK[layer];
+    inputs[`past_key_values_${layer}_value`] = tensors.pastV[layer];
+  }
+
+  const outputs: Record<string, MLTensor> = {
+    [layout.logitsName]: tensors.logits,
+  };
+  for (let layer = 0; layer < layout.layerCount; layer += 1) {
+    outputs[`present_${layer}_key`] = tensors.presentK[layer];
+    outputs[`present_${layer}_value`] = tensors.presentV[layer];
+  }
+
+  context.dispatch(graph, inputs, outputs);
+
+  const logitsView = (await context.readTensorTyped(tensors.logits)) as Float32Array;
+  const nextToken = argmax(logitsView);
+
+  const kvElems = layout.numHeads * seqLen * layout.headDim;
+  for (let layer = 0; layer < layout.layerCount; layer += 1) {
+    const presentK = (await context.readTensorTyped(tensors.presentK[layer])) as Float32Array;
+    const presentV = (await context.readTensorTyped(tensors.presentV[layer])) as Float32Array;
+    if (presentK.length >= kvElems) {
+      storePresent(state, layout, layer, 'key', presentK, seqLen);
+    }
+    if (presentV.length >= kvElems) {
+      storePresent(state, layout, layer, 'value', presentV, seqLen);
+    }
+  }
+
+  state.position += 1;
+  return nextToken;
 }
 
 type LoadedTokenizer = {
@@ -375,16 +358,9 @@ async function main(): Promise<void> {
   installWebNNPolyfill();
   ensureOrtDylibPath();
 
-  if (process.env.ORT_DYLIB_PATH) {
-    console.log(`Using ORT_DYLIB_PATH=${process.env.ORT_DYLIB_PATH}`);
-  } else {
-    console.log(
-      'ORT_DYLIB_PATH not found automatically; set ORT_DYLIB_PATH or ORT_LIB_DIR if loading fails'
-    );
-  }
+  console.log(`Using ORT_DYLIB_PATH=${process.env.ORT_DYLIB_PATH}`);
 
   const { context, graph, meta, snapshotPath } = await ml.loadModelFromHub(REPO_ID, {
-    deviceType: 'gpu',
     accelerated: true,
     powerPreference: 'high-performance',
   });
@@ -392,50 +368,36 @@ async function main(): Promise<void> {
   try {
     console.log(`Downloaded snapshot: ${snapshotPath}`);
     console.log(`Resolved WebNN graph: ${meta.graphPath}`);
-    if (meta.warnings.length > 0) {
-      console.log('Warnings:');
-      for (const warning of meta.warnings) {
-        console.log(`  - ${warning}`);
-      }
-    }
+    console.log(`Context accelerated: ${context.accelerated}`);
 
     const tokenizerPath = findTokenizerPath(snapshotPath);
     const tokenizer = await loadTokenizerFromFile(tokenizerPath);
-    const encodedPrompt = tokenizer.encode(PROMPT_TEXT, true);
-    const promptIds = encodedIds(encodedPrompt);
+    const promptIds = encodedIds(tokenizer.encode(PROMPT_TEXT, true));
 
     if (promptIds.length === 0) {
       throw new Error(`Prompt encoded to zero tokens: "${PROMPT_TEXT}"`);
     }
 
-    const kvLayout = detectKvLayout({
-      inputNames: meta.inputNames,
-      outputNames: meta.outputNames,
-      inputs: meta.inputs,
-    });
+    const layout = detectLayout(meta);
+    if (promptIds.length >= layout.maxCacheLen) {
+      throw new Error(
+        `Prompt too long: ${promptIds.length} tokens (must be < ${layout.maxCacheLen})`
+      );
+    }
+
+    const tensors = await initStepTensors(context, layout);
+    const state = initState(layout);
 
     console.log(`Prompt: ${PROMPT_TEXT}`);
     console.log(`Prompt token count: ${promptIds.length}`);
 
-    const state: StepState = {
-      position: 0,
-      pastLength: 0,
-      kvCache: new Map(),
-    };
-
-    let logits: Float32Array<ArrayBufferLike> = new Float32Array();
-
+    let lastToken = 0;
     for (const tokenId of promptIds) {
-      logits = await runGenerationStep({
+      lastToken = await runStep({
         context,
-        graph: {
-          dispatch: (inputs, outputs) => context.dispatch(graph, inputs, outputs),
-        },
-        modelMeta: {
-          inputNames: meta.inputNames,
-          outputNames: meta.outputNames,
-        },
-        kvLayout,
+        graph,
+        layout,
+        tensors,
         state,
         tokenId,
       });
@@ -443,21 +405,14 @@ async function main(): Promise<void> {
 
     const generatedIds: number[] = [];
     for (let i = 0; i < MAX_NEW_TOKENS; i += 1) {
-      const nextId = argmax(logits);
-      generatedIds.push(nextId);
-
-      logits = await runGenerationStep({
+      generatedIds.push(lastToken);
+      lastToken = await runStep({
         context,
-        graph: {
-          dispatch: (inputs, outputs) => context.dispatch(graph, inputs, outputs),
-        },
-        modelMeta: {
-          inputNames: meta.inputNames,
-          outputNames: meta.outputNames,
-        },
-        kvLayout,
+        graph,
+        layout,
+        tensors,
         state,
-        tokenId: nextId,
+        tokenId: lastToken,
       });
     }
 

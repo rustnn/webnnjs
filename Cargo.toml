@@ -1,0 +1,6 @@
+[workspace]
+members = ["packages/webnn-node/native"]
+resolver = "2"
+
+[workspace.dependencies]
+rustnn = { git = "https://github.com/rustnn/rustnn", features = ["onnx-runtime", "dynamic-inputs"] }

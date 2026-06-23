@@ -7,7 +7,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "demo": "node dist/index.js"
+    "demo": "node run.mjs dist/index.js",
+    "demo:builder": "node run.mjs dist/builder-add.js"
   },
   "dependencies": {
     "@huggingface/tokenizers": "^0.1.2",

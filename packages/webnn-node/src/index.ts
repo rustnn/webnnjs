@@ -1,41 +1,39 @@
 import { snapshotDownload } from '@huggingface/hub';
 import * as native from '@webnnjs/webnn-node-native';
+import {
+  installGeneratedBuilderMethods,
+  type GeneratedMLGraphBuilderMethods,
+} from './generated/builder-methods.js';
 
-export type MLDeviceType = 'cpu' | 'gpu';
-export type MLPowerPreference = 'default' | 'low-power' | 'high-performance';
+export * from './generated/builder-options.js';
+
+export type MLPowerPreference = 'default' | 'high-performance' | 'low-power';
 
 export interface MLContextOptions {
-  deviceType?: MLDeviceType;
   powerPreference?: MLPowerPreference;
   accelerated?: boolean;
 }
 
-export interface MLTensorDescriptor {
-  dataType: 'float32';
+export type MLOperandDataType =
+  | 'float32'
+  | 'float16'
+  | 'int32'
+  | 'uint32'
+  | 'int64'
+  | 'uint64'
+  | 'int8'
+  | 'uint8'
+  | 'int4'
+  | 'uint4';
+
+export interface MLOperandDescriptor {
+  dataType: MLOperandDataType;
   shape: number[];
 }
 
-interface BuilderOperand {
-  id: number;
-  descriptor: MLTensorDescriptor;
-  kind: 'input' | 'constant' | 'intermediate';
-  name?: string;
-  constantData?: Float32Array;
-}
-
-interface BuilderOperation {
-  type: 'add' | 'mul' | 'identity';
-  inputOperands: number[];
-  outputOperand: number;
-}
-
-interface NativeLoadModelMeta {
-  graphPath: string;
-  inputNames: string[];
-  outputNames: string[];
-  inputs: Record<string, LoadModelTensorMeta>;
-  outputs: Record<string, LoadModelTensorMeta>;
-  warnings: string[];
+export interface MLTensorDescriptor extends MLOperandDescriptor {
+  readable?: boolean;
+  writable?: boolean;
 }
 
 export interface LoadModelTensorMeta {
@@ -49,7 +47,6 @@ export interface LoadedModelMeta {
   outputNames: string[];
   inputs: Record<string, LoadModelTensorMeta>;
   outputs: Record<string, LoadModelTensorMeta>;
-  warnings: string[];
 }
 
 export interface LoadModelFromHubResult {
@@ -59,22 +56,19 @@ export interface LoadModelFromHubResult {
   snapshotPath: string;
 }
 
-function assertFloat32Descriptor(
-  descriptor: MLTensorDescriptor,
+function assertDescriptor(
+  descriptor: MLTensorDescriptor | MLOperandDescriptor,
   api: string
-): asserts descriptor is MLTensorDescriptor {
+): void {
   if (!descriptor || typeof descriptor !== 'object') {
     throw new TypeError(`${api}: descriptor must be an object`);
   }
-
-  if (descriptor.dataType !== 'float32') {
-    throw new TypeError(`${api}: only dataType='float32' is supported in MVP`);
+  if (!descriptor.dataType || typeof descriptor.dataType !== 'string') {
+    throw new TypeError(`${api}: descriptor.dataType is required`);
   }
-
   if (!Array.isArray(descriptor.shape)) {
     throw new TypeError(`${api}: descriptor.shape must be an array`);
   }
-
   for (const dim of descriptor.shape) {
     if (!Number.isInteger(dim) || dim < 0) {
       throw new TypeError(`${api}: shape dimensions must be non-negative integers`);
@@ -82,123 +76,127 @@ function assertFloat32Descriptor(
   }
 }
 
-function checkedElementCount(shape: number[]): number {
-  if (shape.length === 0) {
-    return 1;
-  }
-
-  let total = 1;
-  for (const dim of shape) {
-    total *= dim;
-  }
-  return total;
+function descriptorToJson(descriptor: MLTensorDescriptor | MLOperandDescriptor): string {
+  return JSON.stringify({
+    dataType: descriptor.dataType,
+    shape: descriptor.shape,
+    readable: 'readable' in descriptor ? descriptor.readable : undefined,
+    writable: 'writable' in descriptor ? descriptor.writable : undefined,
+  });
 }
 
-function normalizeFloat32Data(
-  data: ArrayBufferView | ArrayBuffer | ArrayLike<number>,
-  api: string
-): Float32Array {
-  if (data instanceof Float32Array) {
-    return data;
-  }
+function bufferFromArrayBufferView(data: ArrayBufferView): Buffer {
+  return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+}
 
-  if (ArrayBuffer.isView(data)) {
-    return Float32Array.from(data as unknown as ArrayLike<number>);
-  }
+type Float16ArrayConstructor = new (
+  buffer?: ArrayBuffer,
+  byteOffset?: number,
+  length?: number
+) => ArrayBufferView;
 
-  if (data instanceof ArrayBuffer) {
-    if (data.byteLength % 4 !== 0) {
-      throw new TypeError(`${api}: ArrayBuffer byteLength must be divisible by 4`);
+function float16ArrayCtor(): Float16ArrayConstructor {
+  const ctor = (globalThis as { Float16Array?: Float16ArrayConstructor }).Float16Array;
+  return ctor ?? (Uint16Array as unknown as Float16ArrayConstructor);
+}
+
+function float16ArrayFromBuffer(buffer: Buffer): ArrayBufferView {
+  const Ctor = float16ArrayCtor();
+  const length = Math.floor(buffer.byteLength / 2);
+  return new Ctor(buffer.buffer as ArrayBuffer, buffer.byteOffset, length);
+}
+
+function typedArrayFromBuffer(
+  buffer: Buffer,
+  dataType: MLOperandDataType
+): ArrayBufferView {
+  if (buffer.byteLength === 0) {
+    switch (dataType) {
+      case 'float32':
+        return new Float32Array();
+      case 'float16':
+        return new (float16ArrayCtor())();
+      case 'int64':
+        return new BigInt64Array();
+      case 'int32':
+        return new Int32Array();
+      case 'uint32':
+        return new Uint32Array();
+      default:
+        return new Uint8Array();
     }
-    return new Float32Array(data);
   }
 
-  if (typeof data === 'object' && data !== null && 'length' in data) {
-    return Float32Array.from(data as ArrayLike<number>);
+  switch (dataType) {
+    case 'float32':
+      return new Float32Array(
+        buffer.buffer,
+        buffer.byteOffset,
+        Math.floor(buffer.byteLength / 4)
+      );
+    case 'float16':
+      return float16ArrayFromBuffer(buffer);
+    case 'int64':
+      return new BigInt64Array(
+        buffer.buffer,
+        buffer.byteOffset,
+        Math.floor(buffer.byteLength / 8)
+      );
+    case 'int32':
+      return new Int32Array(
+        buffer.buffer,
+        buffer.byteOffset,
+        Math.floor(buffer.byteLength / 4)
+      );
+    case 'uint32':
+      return new Uint32Array(
+        buffer.buffer,
+        buffer.byteOffset,
+        Math.floor(buffer.byteLength / 4)
+      );
+    case 'uint64':
+      return new BigUint64Array(
+        buffer.buffer,
+        buffer.byteOffset,
+        Math.floor(buffer.byteLength / 8)
+      );
+    case 'int8':
+      return new Int8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    case 'uint8':
+    case 'int4':
+    case 'uint4':
+      return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    default:
+      throw new TypeError(`unsupported readTensor dataType: ${dataType}`);
   }
-
-  throw new TypeError(
-    `${api}: data must be Float32Array, ArrayBufferView, ArrayBuffer, or number[]`
-  );
 }
 
-function bufferFromFloat32(view: Float32Array): Buffer {
-  return Buffer.from(view.buffer, view.byteOffset, view.byteLength);
+export class MLOperand {
+  constructor(
+    readonly builder: MLGraphBuilder,
+    readonly handle: number,
+    readonly dataType: MLOperandDataType,
+    readonly shape: number[]
+  ) {}
 }
-
-function float32FromBuffer(buffer: Buffer): Float32Array {
-  if (buffer.byteLength % 4 !== 0) {
-    throw new Error('native readTensor returned invalid byteLength for float32 buffer');
-  }
-
-  const view = new Float32Array(
-    buffer.buffer,
-    buffer.byteOffset,
-    Math.floor(buffer.byteLength / 4)
-  );
-  return new Float32Array(view);
-}
-
-const contextFinalizer = new FinalizationRegistry<number>((contextHandle) => {
-  try {
-    native.destroyContext(contextHandle);
-  } catch {
-    // Best-effort cleanup during GC.
-  }
-});
-
-const graphFinalizer = new FinalizationRegistry<{
-  contextHandle: number;
-  graphHandle: number;
-}>(({ contextHandle, graphHandle }) => {
-  try {
-    native.destroyGraph(contextHandle, graphHandle);
-  } catch {
-    // Best-effort cleanup during GC.
-  }
-});
-
-const tensorFinalizer = new FinalizationRegistry<{
-  contextHandle: number;
-  tensorHandle: number;
-}>(({ contextHandle, tensorHandle }) => {
-  try {
-    native.destroyTensor(contextHandle, tensorHandle);
-  } catch {
-    // Best-effort cleanup during GC.
-  }
-});
 
 export class MLTensor {
   private _destroyed = false;
 
   constructor(
     private readonly _context: MLContext,
-    private readonly _nativeHandle: number,
-    private _descriptor: MLTensorDescriptor
-  ) {
-    tensorFinalizer.register(
-      this,
-      {
-        contextHandle: _context.nativeHandle,
-        tensorHandle: _nativeHandle,
-      },
-      this
-    );
-  }
-
-  get descriptor(): MLTensorDescriptor {
-    return {
-      dataType: this._descriptor.dataType,
-      shape: [...this._descriptor.shape],
-    };
-  }
+    private readonly _handle: number,
+    readonly dataType: MLOperandDataType,
+    readonly shape: number[],
+    readonly readable: boolean,
+    readonly writable: boolean
+  ) {}
 
   get nativeHandle(): number {
     if (this._destroyed) {
       throw new Error('Tensor has been destroyed');
     }
-    return this._nativeHandle;
+    return this._handle;
   }
 
   destroy(): void {
@@ -206,8 +204,7 @@ export class MLTensor {
       return;
     }
     this._destroyed = true;
-    tensorFinalizer.unregister(this);
-    native.destroyTensor(this._context.nativeHandle, this._nativeHandle);
+    native.destroyTensor(this._context.nativeHandle, this._handle);
   }
 }
 
@@ -216,24 +213,15 @@ export class MLGraph {
 
   constructor(
     readonly context: MLContext,
-    private readonly _nativeHandle: number,
+    private readonly _handle: number,
     readonly meta?: LoadedModelMeta
-  ) {
-    graphFinalizer.register(
-      this,
-      {
-        contextHandle: context.nativeHandle,
-        graphHandle: _nativeHandle,
-      },
-      this
-    );
-  }
+  ) {}
 
   get nativeHandle(): number {
     if (this._destroyed) {
       throw new Error('Graph has been destroyed');
     }
-    return this._nativeHandle;
+    return this._handle;
   }
 
   destroy(): void {
@@ -241,24 +229,24 @@ export class MLGraph {
       return;
     }
     this._destroyed = true;
-    graphFinalizer.unregister(this);
-    native.destroyGraph(this.context.nativeHandle, this._nativeHandle);
+    native.destroyGraph(this.context.nativeHandle, this._handle);
   }
 }
 
 export class MLContext {
   private _destroyed = false;
-  private _dispatchFence: Promise<void> = Promise.resolve();
 
-  constructor(private readonly _nativeHandle: number) {
-    contextFinalizer.register(this, _nativeHandle, this);
-  }
+  constructor(private readonly _handle: number) {}
 
   get nativeHandle(): number {
     if (this._destroyed) {
       throw new Error('Context has been destroyed');
     }
-    return this._nativeHandle;
+    return this._handle;
+  }
+
+  get accelerated(): boolean {
+    return native.contextAccelerated(this.nativeHandle);
   }
 
   destroy(): void {
@@ -266,57 +254,49 @@ export class MLContext {
       return;
     }
     this._destroyed = true;
-    contextFinalizer.unregister(this);
-    native.destroyContext(this._nativeHandle);
+    native.destroyContext(this._handle);
   }
 
   async createTensor(descriptor: MLTensorDescriptor): Promise<MLTensor> {
-    assertFloat32Descriptor(descriptor, 'createTensor');
-
+    assertDescriptor(descriptor, 'createTensor');
     const handle = native.createTensor(
       this.nativeHandle,
-      JSON.stringify(descriptor)
+      descriptorToJson(descriptor)
     );
-
-    return new MLTensor(this, handle, {
-      dataType: 'float32',
-      shape: [...descriptor.shape],
-    });
+    return new MLTensor(
+      this,
+      handle,
+      descriptor.dataType,
+      [...descriptor.shape],
+      descriptor.readable ?? false,
+      descriptor.writable ?? false
+    );
   }
 
-  writeTensor(
-    tensor: MLTensor,
-    data: ArrayBufferView | ArrayBuffer | ArrayLike<number>
-  ): void {
+  writeTensor(tensor: MLTensor, data: ArrayBufferView | ArrayBuffer): void {
     if (!(tensor instanceof MLTensor)) {
       throw new TypeError('writeTensor: tensor must be an MLTensor');
     }
-
-    const values = normalizeFloat32Data(data, 'writeTensor');
-    const expected = checkedElementCount(tensor.descriptor.shape);
-    if (values.length !== expected) {
-      throw new TypeError(
-        `writeTensor: expected ${expected} elements for shape ${JSON.stringify(
-          tensor.descriptor.shape
-        )}, got ${values.length}`
-      );
-    }
-
-    native.writeTensor(
-      this.nativeHandle,
-      tensor.nativeHandle,
-      bufferFromFloat32(values)
-    );
+    const buffer =
+      data instanceof ArrayBuffer
+        ? Buffer.from(data)
+        : bufferFromArrayBufferView(data);
+    native.writeTensor(this.nativeHandle, tensor.nativeHandle, buffer);
   }
 
-  async readTensor(tensor: MLTensor): Promise<Float32Array> {
+  async readTensor(tensor: MLTensor): Promise<ArrayBuffer> {
     if (!(tensor instanceof MLTensor)) {
       throw new TypeError('readTensor: tensor must be an MLTensor');
     }
-
-    await this._dispatchFence;
     const bytes = native.readTensor(this.nativeHandle, tensor.nativeHandle);
-    return float32FromBuffer(bytes);
+    const copy = Buffer.allocUnsafe(bytes.byteLength);
+    bytes.copy(copy);
+    return copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength);
+  }
+
+  async readTensorTyped(tensor: MLTensor): Promise<ArrayBufferView> {
+    const buffer = Buffer.from(await this.readTensor(tensor));
+    return typedArrayFromBuffer(buffer, tensor.dataType);
   }
 
   dispatch(
@@ -345,306 +325,184 @@ export class MLContext {
       outputHandles[name] = tensor.nativeHandle;
     }
 
-    const runDispatch = (): Promise<void> =>
-      native.dispatch(
-        this.nativeHandle,
-        graph.nativeHandle,
-        JSON.stringify(inputHandles),
-        JSON.stringify(outputHandles)
-      );
-
-    this._dispatchFence = this._dispatchFence.then(runDispatch, runDispatch);
+    native.dispatch(
+      this.nativeHandle,
+      graph.nativeHandle,
+      JSON.stringify(inputHandles),
+      JSON.stringify(outputHandles)
+    );
   }
 
-  async loadModel(
-    pathOrDir: string,
-    options: MLContextOptions = {}
-  ): Promise<{ graph: MLGraph; meta: LoadedModelMeta }> {
+  /** rustnn extension: resize tensor logical shape before dispatch. */
+  rustnnResizeTensor(tensor: MLTensor, shape: number[]): void {
+    native.rustnnResizeTensor(
+      this.nativeHandle,
+      tensor.nativeHandle,
+      JSON.stringify(shape)
+    );
+  }
+
+  /** rustnn extension: pre-size tensor storage for dynamic shapes. */
+  rustnnSetTensorCapacity(tensor: MLTensor, maxShape: number[]): void {
+    native.rustnnSetTensorCapacity(
+      this.nativeHandle,
+      tensor.nativeHandle,
+      JSON.stringify(maxShape)
+    );
+  }
+
+  async loadModel(pathOrDir: string): Promise<{ graph: MLGraph; meta: LoadedModelMeta }> {
     if (typeof pathOrDir !== 'string' || pathOrDir.length === 0) {
       throw new TypeError('loadModel: pathOrDir must be a non-empty string');
     }
 
-    const result = await native.loadWebnnModel(
-      this.nativeHandle,
-      pathOrDir,
-      JSON.stringify(options)
-    );
-
-    const meta = JSON.parse(result.metaJson) as NativeLoadModelMeta;
-    const normalizedMeta: LoadedModelMeta = {
-      graphPath: meta.graphPath,
-      inputNames: [...meta.inputNames],
-      outputNames: [...meta.outputNames],
-      inputs: { ...meta.inputs },
-      outputs: { ...meta.outputs },
-      warnings: [...meta.warnings],
-    };
-
+    const result = await native.loadWebnnModel(this.nativeHandle, pathOrDir);
+    const meta = JSON.parse(result.metaJson) as LoadedModelMeta;
     return {
-      graph: new MLGraph(this, result.graphHandle, normalizedMeta),
-      meta: normalizedMeta,
+      graph: new MLGraph(this, result.graphHandle, meta),
+      meta,
     };
-  }
-
-  async _waitForDispatches(): Promise<void> {
-    await this._dispatchFence;
   }
 }
 
+export interface MLGraphBuilder extends GeneratedMLGraphBuilderMethods {}
+
 export class MLGraphBuilder {
-  private _nextOperandId = 0;
-  private readonly _operands = new Map<number, BuilderOperand>();
-  private readonly _operations: BuilderOperation[] = [];
+  private _destroyed = false;
+  private readonly _handle: number;
 
-  constructor(private readonly _context: MLContext) {}
+  constructor(readonly context: MLContext) {
+    if (!(context instanceof MLContext)) {
+      throw new TypeError('MLGraphBuilder constructor requires an MLContext');
+    }
+    this._handle = native.createGraphBuilder(context.nativeHandle);
+  }
 
-  input(name: string, descriptor: MLTensorDescriptor): BuilderOperand {
+  private get nativeHandle(): number {
+    if (this._destroyed) {
+      throw new Error('Graph builder has been destroyed');
+    }
+    return this._handle;
+  }
+
+  input(name: string, descriptor: MLOperandDescriptor): MLOperand {
     if (typeof name !== 'string' || name.length === 0) {
       throw new TypeError('input: name must be a non-empty string');
     }
-    assertFloat32Descriptor(descriptor, 'input');
-
-    const operand: BuilderOperand = {
-      id: this._nextOperandId++,
-      descriptor: {
-        dataType: descriptor.dataType,
-        shape: [...descriptor.shape],
-      },
-      kind: 'input',
+    assertDescriptor(descriptor, 'input');
+    const handle = native.builderInput(
+      this.nativeHandle,
       name,
-    };
-
-    this._operands.set(operand.id, operand);
-    return operand;
+      descriptorToJson(descriptor)
+    );
+    return new MLOperand(this, handle, descriptor.dataType, [...descriptor.shape]);
   }
 
+  constant(descriptor: MLOperandDescriptor, buffer: ArrayBufferView): MLOperand;
+  constant(dataType: MLOperandDataType, value: number): MLOperand;
+  constant(tensor: MLTensor): MLOperand;
   constant(
-    descriptor: MLTensorDescriptor,
-    data: ArrayBufferView | ArrayBuffer | ArrayLike<number>
-  ): BuilderOperand {
-    assertFloat32Descriptor(descriptor, 'constant');
-    const values = normalizeFloat32Data(data, 'constant');
-
-    const expected = checkedElementCount(descriptor.shape);
-    if (values.length !== expected) {
+    descriptorOrType: MLOperandDescriptor | MLOperandDataType | MLTensor,
+    bufferOrValue?: ArrayBufferView | number
+  ): MLOperand {
+    if (typeof descriptorOrType === 'string') {
       throw new TypeError(
-        `constant: expected ${expected} elements for shape ${JSON.stringify(
-          descriptor.shape
-        )}, got ${values.length}`
+        'constant(dataType, value): scalar constants are not implemented in rustnn yet'
       );
     }
 
-    const operand: BuilderOperand = {
-      id: this._nextOperandId++,
-      descriptor: {
-        dataType: descriptor.dataType,
-        shape: [...descriptor.shape],
-      },
-      kind: 'constant',
-      constantData: values,
-    };
-
-    this._operands.set(operand.id, operand);
-    return operand;
-  }
-
-  add(a: BuilderOperand, b: BuilderOperand): BuilderOperand {
-    return this._binaryOp('add', a, b);
-  }
-
-  mul(a: BuilderOperand, b: BuilderOperand): BuilderOperand {
-    return this._binaryOp('mul', a, b);
-  }
-
-  private _binaryOp(
-    type: 'add' | 'mul',
-    a: BuilderOperand,
-    b: BuilderOperand
-  ): BuilderOperand {
-    this._assertOperand(a, '_binaryOp(a)');
-    this._assertOperand(b, '_binaryOp(b)');
-
-    if (a.descriptor.dataType !== 'float32' || b.descriptor.dataType !== 'float32') {
-      throw new TypeError(`${type}: only float32 operands are supported`);
-    }
-
-    if (a.descriptor.shape.length !== b.descriptor.shape.length) {
+    if (descriptorOrType instanceof MLTensor) {
       throw new TypeError(
-        `${type}: rank mismatch (${a.descriptor.shape.length} vs ${b.descriptor.shape.length})`
+        'constant(tensor): tensor constants are not implemented in rustnn yet'
       );
     }
 
-    for (let i = 0; i < a.descriptor.shape.length; i += 1) {
-      if (a.descriptor.shape[i] !== b.descriptor.shape[i]) {
-        throw new TypeError(
-          `${type}: shape mismatch (${JSON.stringify(
-            a.descriptor.shape
-          )} vs ${JSON.stringify(b.descriptor.shape)})`
-        );
-      }
+    if (!bufferOrValue || ArrayBuffer.isView(bufferOrValue) === false) {
+      throw new TypeError(
+        'constant(descriptor, buffer): buffer must be an ArrayBufferView'
+      );
     }
 
-    const output: BuilderOperand = {
-      id: this._nextOperandId++,
-      descriptor: {
-        dataType: 'float32',
-        shape: [...a.descriptor.shape],
-      },
-      kind: 'intermediate',
+    assertDescriptor(descriptorOrType, 'constant');
+    const resultJson = native.builderConstantBuffer(
+      this.nativeHandle,
+      descriptorToJson(descriptorOrType),
+      bufferFromArrayBufferView(bufferOrValue)
+    );
+    return this._operandFromInvokeJson(resultJson);
+  }
+
+  _invokeOp(multi: false, wire: Record<string, unknown>): MLOperand;
+  _invokeOp(multi: true, wire: Record<string, unknown>): MLOperand[];
+  _invokeOp(
+    multi: boolean,
+    wire: Record<string, unknown>
+  ): MLOperand | MLOperand[] {
+    const resultJson = native.builderInvoke(
+      this.nativeHandle,
+      JSON.stringify(wire)
+    );
+    const result = JSON.parse(resultJson) as {
+      operands: Array<{
+        handle: number;
+        dataType: MLOperandDataType;
+        shape: number[];
+      }>;
     };
-
-    this._operands.set(output.id, output);
-    this._operations.push({
-      type,
-      inputOperands: [a.id, b.id],
-      outputOperand: output.id,
-    });
-
-    return output;
+    const mapped = result.operands.map(
+      (o) => new MLOperand(this, o.handle, o.dataType, o.shape)
+    );
+    return multi ? mapped : mapped[0];
   }
 
-  private _assertOperand(operand: BuilderOperand, label: string): void {
-    if (!operand || typeof operand !== 'object' || typeof operand.id !== 'number') {
-      throw new TypeError(`${label}: operand is invalid`);
-    }
-
-    if (!this._operands.has(operand.id)) {
-      throw new TypeError(`${label}: operand does not belong to this builder`);
-    }
+  private _operandFromInvokeJson(resultJson: string): MLOperand {
+    const result = JSON.parse(resultJson) as {
+      operands: Array<{
+        handle: number;
+        dataType: MLOperandDataType;
+        shape: number[];
+      }>;
+    };
+    const o = result.operands[0];
+    return new MLOperand(this, o.handle, o.dataType, o.shape);
   }
 
-  async build(outputs: Record<string, BuilderOperand>): Promise<MLGraph> {
+  async build(outputs: Record<string, MLOperand>): Promise<MLGraph> {
     if (!outputs || typeof outputs !== 'object') {
       throw new TypeError('build: outputs must be an object');
     }
 
-    const outputEntries = Object.entries(outputs);
-    if (outputEntries.length === 0) {
-      throw new TypeError('build: outputs must have at least one entry');
-    }
-
-    if (this._operations.length === 0) {
-      throw new TypeError('build: graph has no operations');
-    }
-
-    type IrOperand = {
-      kind: 'input' | 'constant' | 'output';
-      descriptor: {
-        data_type: 'float32';
-        shape: number[];
-        pending_permutation: number[];
-      };
-      name?: string;
-    };
-
-    const irOperands: IrOperand[] = [];
-    const inputOperands: number[] = [];
-    const outputOperands: number[] = [];
-    const irOperations: Array<{
-      type: 'add' | 'mul' | 'identity';
-      input_operands: number[];
-      output_operand: number;
-      attributes: Record<string, never>;
-    }> = [];
-    const constantOperandIdsToHandles: Record<string, { data: string }> = {};
-
-    const sortedOperandIds = [...this._operands.keys()].sort((a, b) => a - b);
-    for (const operandId of sortedOperandIds) {
-      const operand = this._operands.get(operandId);
-      if (!operand) {
-        continue;
-      }
-
-      irOperands[operand.id] = {
-        kind: operand.kind === 'input' ? 'input' : operand.kind === 'constant' ? 'constant' : 'output',
-        descriptor: {
-          data_type: 'float32',
-          shape: [...operand.descriptor.shape],
-          pending_permutation: [],
-        },
-      };
-
-      if (operand.kind === 'input') {
-        irOperands[operand.id].name = operand.name;
-        inputOperands.push(operand.id);
-      }
-
-      if (operand.kind === 'constant') {
-        const data = operand.constantData;
-        if (!data) {
-          throw new Error(`build: missing constant data for operand ${operand.id}`);
-        }
-
-        constantOperandIdsToHandles[String(operand.id)] = {
-          data: Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString(
-            'base64'
-          ),
-        };
-      }
-    }
-
-    for (const op of this._operations) {
-      irOperations.push({
-        type: op.type,
-        input_operands: [...op.inputOperands],
-        output_operand: op.outputOperand,
-        attributes: {},
-      });
-    }
-
-    const claimedOutputOperandNames = new Map<number, string>();
-
-    for (const [name, operand] of outputEntries) {
-      if (typeof name !== 'string' || name.length === 0) {
-        throw new TypeError('build: output names must be non-empty strings');
-      }
+    const outputHandles: Record<string, number> = {};
+    for (const [name, operand] of Object.entries(outputs)) {
       this._assertOperand(operand, `build output '${name}'`);
-
-      const existingName = claimedOutputOperandNames.get(operand.id);
-      if (!existingName) {
-        claimedOutputOperandNames.set(operand.id, name);
-        irOperands[operand.id].name = name;
-        outputOperands.push(operand.id);
-      } else {
-        const duplicateOutputId = this._nextOperandId++;
-        irOperands[duplicateOutputId] = {
-          kind: 'output',
-          name,
-          descriptor: {
-            data_type: 'float32',
-            shape: [...operand.descriptor.shape],
-            pending_permutation: [],
-          },
-        };
-
-        irOperations.push({
-          type: 'identity',
-          input_operands: [operand.id],
-          output_operand: duplicateOutputId,
-          attributes: {},
-        });
-        outputOperands.push(duplicateOutputId);
-      }
+      outputHandles[name] = operand.handle;
     }
 
-    const ir = {
-      operands: irOperands,
-      input_operands: inputOperands,
-      output_operands: outputOperands,
-      operations: irOperations,
-      constant_operand_ids_to_handles: constantOperandIdsToHandles,
-      id_to_constant_tensor_operand_map: {},
-      quantized: false,
-    };
-
-    const graphHandle = await native.compileGraph(
-      this._context.nativeHandle,
-      JSON.stringify(ir)
+    const graphHandle = await native.builderBuild(
+      this.context.nativeHandle,
+      this.nativeHandle,
+      JSON.stringify(outputHandles)
     );
+    this._destroyed = true;
+    return new MLGraph(this.context, graphHandle);
+  }
 
-    return new MLGraph(this._context, graphHandle);
+  destroy(): void {
+    if (this._destroyed) {
+      return;
+    }
+    this._destroyed = true;
+    native.destroyGraphBuilder(this._handle);
+  }
+
+  private _assertOperand(operand: MLOperand, label: string): void {
+    if (!(operand instanceof MLOperand) || operand.builder !== this) {
+      throw new TypeError(`${label}: operand does not belong to this builder`);
+    }
   }
 }
+
+installGeneratedBuilderMethods(MLGraphBuilder.prototype);
 
 class MLNamespace {
   async createContext(options: MLContextOptions = {}): Promise<MLContext> {
@@ -652,8 +510,8 @@ class MLNamespace {
       throw new TypeError('createContext: options must be an object');
     }
 
-    const contextHandle = native.createContext(JSON.stringify(options ?? {}));
-    return new MLContext(contextHandle);
+    const handle = native.createContext(JSON.stringify(options ?? {}));
+    return new MLContext(handle);
   }
 
   async loadModelFromHub(
@@ -690,7 +548,7 @@ class MLNamespace {
     }
 
     const snapshotPath = await snapshotDownload(downloadArgs as any);
-    const { graph, meta } = await context.loadModel(snapshotPath, options);
+    const { graph, meta } = await context.loadModel(snapshotPath);
 
     return {
       context,
