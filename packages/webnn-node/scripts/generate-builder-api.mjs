@@ -91,7 +91,7 @@ const RUST_METHOD = {
 
 const RUST_WITH_OPTIONS = {
   concat: 'concat_with_options',
-  conv2d: 'conv2_with_options',
+  conv2d: 'conv2d_with_options',
   gather: 'gather_with_options',
   gatherElements: 'gather_elements_with_options',
   slice: 'slice_with_options',

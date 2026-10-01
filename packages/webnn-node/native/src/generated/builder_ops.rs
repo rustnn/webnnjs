@@ -99,7 +99,7 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLConv2dOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["bias"])?)?;
-            let out = builder.builder.conv2_with_options(a, b, opts)
+            let out = builder.builder.conv2d_with_options(a, b, opts)
                 .map_err(|e| op_err("conv2d", e))?;
             Ok(single_result(builder, out)?)
         }
