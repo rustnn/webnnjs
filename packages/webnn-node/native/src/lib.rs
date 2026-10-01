@@ -99,11 +99,6 @@ impl Store {
     }
 }
 
-// MLContext/MLGraphBuilder use trait objects that are not auto-Send. Node calls into
-// this addon are serialized through the mutex; ORT dispatch stays on the calling thread.
-unsafe impl Send for Store {}
-unsafe impl Sync for Store {}
-
 static STATE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store::new()));
 
 fn nerr(status: Status, message: impl Into<String>) -> Error {
