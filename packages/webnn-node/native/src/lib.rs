@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use napi::bindgen_prelude::Buffer;
 use napi::{Error, Result, Status};
 use napi_derive::napi;
-use once_cell::sync::Lazy;
 use rustnn::graph::{get_static_or_max_size, DataType, GraphInfo};
 use rustnn::loader::load_graph_from_path;
 use rustnn::mlcontext::{
@@ -105,7 +104,7 @@ impl Store {
 unsafe impl Send for Store {}
 unsafe impl Sync for Store {}
 
-static STATE: Lazy<Mutex<Store>> = Lazy::new(|| Mutex::new(Store::new()));
+static STATE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store::new()));
 
 fn nerr(status: Status, message: impl Into<String>) -> Error {
     Error::new(status, message.into())
