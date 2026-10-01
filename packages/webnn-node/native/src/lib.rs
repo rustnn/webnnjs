@@ -334,10 +334,9 @@ fn find_webnn_graph_path(path_or_dir: &Path) -> Result<PathBuf> {
 
         match ext.as_deref() {
             Some("webnn") => webnn_files.push(path.to_path_buf()),
-            Some("json")
-                if looks_like_graph_json(path) => {
-                    json_files.push(path.to_path_buf());
-                }
+            Some("json") if looks_like_graph_json(path) => {
+                json_files.push(path.to_path_buf());
+            }
             _ => {}
         }
     }
