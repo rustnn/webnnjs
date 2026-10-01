@@ -334,11 +334,10 @@ fn find_webnn_graph_path(path_or_dir: &Path) -> Result<PathBuf> {
 
         match ext.as_deref() {
             Some("webnn") => webnn_files.push(path.to_path_buf()),
-            Some("json") => {
-                if looks_like_graph_json(path) {
+            Some("json")
+                if looks_like_graph_json(path) => {
                     json_files.push(path.to_path_buf());
                 }
-            }
             _ => {}
         }
     }
@@ -488,35 +487,35 @@ fn read_tensor_bytes(context: &mut MLContext, tensor: &MLTensor) -> Result<Vec<u
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(bytemuck::cast_slice(&values).to_vec());
+            Ok(bytemuck::cast_slice(&values).to_vec())
         }
         MLOperandDataType::Int64 => {
             let mut values = vec![0i64; logical / 8];
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(bytemuck::cast_slice(&values).to_vec());
+            Ok(bytemuck::cast_slice(&values).to_vec())
         }
         MLOperandDataType::Int32 => {
             let mut values = vec![0i32; logical / 4];
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(bytemuck::cast_slice(&values).to_vec());
+            Ok(bytemuck::cast_slice(&values).to_vec())
         }
         MLOperandDataType::Uint32 => {
             let mut values = vec![0u32; logical / 4];
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(bytemuck::cast_slice(&values).to_vec());
+            Ok(bytemuck::cast_slice(&values).to_vec())
         }
         MLOperandDataType::Uint64 => {
             let mut values = vec![0u64; logical / 8];
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(bytemuck::cast_slice(&values).to_vec());
+            Ok(bytemuck::cast_slice(&values).to_vec())
         }
         MLOperandDataType::Int8 => {
             let mut values = vec![0i8; logical];
@@ -530,7 +529,7 @@ fn read_tensor_bytes(context: &mut MLContext, tensor: &MLTensor) -> Result<Vec<u
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(values);
+            Ok(values)
         }
         MLOperandDataType::Int4 | MLOperandDataType::Uint4 => {
             let mut values = vec![0u8; logical];
@@ -550,7 +549,7 @@ fn read_tensor_bytes(context: &mut MLContext, tensor: &MLTensor) -> Result<Vec<u
 }
 
 pub(crate) fn bytes_to_pod<T: bytemuck::Pod>(input: &[u8]) -> Result<Vec<T>> {
-    if input.len() % std::mem::size_of::<T>() != 0 {
+    if !input.len().is_multiple_of(std::mem::size_of::<T>()) {
         return Err(nerr(
             Status::InvalidArg,
             format!(
