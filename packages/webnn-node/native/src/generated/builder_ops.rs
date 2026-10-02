@@ -2,41 +2,19 @@
 
 use napi::{Error, Result, Status};
 use rustnn::operator_options::{
-    MLOperatorOptions,
-    MLArgMinMaxOptions,
-    MLBatchNormalizationOptions,
-    MLClampOptions,
-    MLConv2dOptions,
-    MLConvTranspose2dOptions,
-    MLCumulativeSumOptions,
-    MLEluOptions,
-    MLGatherOptions,
-    MLGemmOptions,
-    MLGruCellOptions,
-    MLGruOptions,
-    MLHardSigmoidOptions,
-    MLInstanceNormalizationOptions,
-    MLLayerNormalizationOptions,
-    MLLeakyReluOptions,
-    MLLinearOptions,
-    MLLstmCellOptions,
-    MLLstmOptions,
-    MLPadOptions,
-    MLPool2dOptions,
-    MLReduceOptions,
-    MLResample2dOptions,
-    MLReverseOptions,
-    MLScatterOptions,
-    MLSliceOptions,
-    MLSplitOptions,
-    MLTransposeOptions,
-    MLTriangularOptions,
+    MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConv2dOptions,
+    MLConvTranspose2dOptions, MLCumulativeSumOptions, MLEluOptions, MLGatherOptions, MLGemmOptions,
+    MLGruCellOptions, MLGruOptions, MLHardSigmoidOptions, MLInstanceNormalizationOptions,
+    MLLayerNormalizationOptions, MLLeakyReluOptions, MLLinearOptions, MLLstmCellOptions,
+    MLLstmOptions, MLOperatorOptions, MLPadOptions, MLPool2dOptions, MLReduceOptions,
+    MLResample2dOptions, MLReverseOptions, MLScatterOptions, MLSliceOptions, MLSplitOptions,
+    MLTransposeOptions, MLTriangularOptions,
 };
 
 use crate::builder_dispatch::{
-    missing_field, multi_result, op_err, operand_at, operands_all,
-    parse_data_type, parse_mldimensions, parse_options, resolve_option_operands, single_result,
-    split_equal_parts, BuilderInvokeWire, InvokeResult,
+    missing_field, multi_result, op_err, operand_at, operands_all, parse_data_type,
+    parse_mldimensions, parse_options, resolve_option_operands, single_result, split_equal_parts,
+    BuilderInvokeWire, InvokeResult,
 };
 use crate::BuilderEntry;
 
@@ -49,7 +27,9 @@ pub fn dispatch_builder_op(
             let input = operand_at(builder, &wire, 0)?;
             let axis = wire.axis.ok_or_else(|| missing_field("argMin", "axis"))?;
             let opts: MLArgMinMaxOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.arg_min_with_options(input, axis, opts)
+            let out = builder
+                .builder
+                .arg_min_with_options(input, axis, opts)
                 .map_err(|e| op_err("argMin", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -57,7 +37,9 @@ pub fn dispatch_builder_op(
             let input = operand_at(builder, &wire, 0)?;
             let axis = wire.axis.ok_or_else(|| missing_field("argMax", "axis"))?;
             let opts: MLArgMinMaxOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.arg_max_with_options(input, axis, opts)
+            let out = builder
+                .builder
+                .arg_max_with_options(input, axis, opts)
                 .map_err(|e| op_err("argMax", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -65,25 +47,37 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let c = operand_at(builder, &wire, 2)?;
-            let opts: MLBatchNormalizationOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["scale", "bias"])?)?;
-            let out = builder.builder.batch_normalization_with_options(a, b, c, opts)
+            let opts: MLBatchNormalizationOptions = parse_options(resolve_option_operands(
+                builder,
+                wire.options.take(),
+                &["scale", "bias"],
+            )?)?;
+            let out = builder
+                .builder
+                .batch_normalization_with_options(a, b, c, opts)
                 .map_err(|e| op_err("batchNormalization", e))?;
             Ok(single_result(builder, out)?)
         }
         "cast" => {
             let input = operand_at(builder, &wire, 0)?;
             let data_type = parse_data_type(
-                wire.data_type.as_deref().ok_or_else(|| missing_field("cast", "dataType"))?,
+                wire.data_type
+                    .as_deref()
+                    .ok_or_else(|| missing_field("cast", "dataType"))?,
             )?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.cast_with_options(input, data_type, opts)
+            let out = builder
+                .builder
+                .cast_with_options(input, data_type, opts)
                 .map_err(|e| op_err("cast", e))?;
             Ok(single_result(builder, out)?)
         }
         "clamp" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLClampOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.clamp_with_options(input, opts)
+            let out = builder
+                .builder
+                .clamp_with_options(input, opts)
                 .map_err(|e| op_err("clamp", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -91,31 +85,49 @@ pub fn dispatch_builder_op(
             let inputs = operands_all(builder, &wire)?;
             let axis = wire.axis.ok_or_else(|| missing_field("concat", "axis"))?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.concat_with_options(&inputs, axis, opts)
+            let out = builder
+                .builder
+                .concat_with_options(&inputs, axis, opts)
                 .map_err(|e| op_err("concat", e))?;
             Ok(single_result(builder, out)?)
         }
         "conv2d" => {
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
-            let opts: MLConv2dOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["bias"])?)?;
-            let out = builder.builder.conv2_with_options(a, b, opts)
+            let opts: MLConv2dOptions = parse_options(resolve_option_operands(
+                builder,
+                wire.options.take(),
+                &["bias"],
+            )?)?;
+            let out = builder
+                .builder
+                .conv2d_with_options(a, b, opts)
                 .map_err(|e| op_err("conv2d", e))?;
             Ok(single_result(builder, out)?)
         }
         "convTranspose2d" => {
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
-            let opts: MLConvTranspose2dOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["bias"])?)?;
-            let out = builder.builder.conv_transpose2d_with_options(a, b, opts)
+            let opts: MLConvTranspose2dOptions = parse_options(resolve_option_operands(
+                builder,
+                wire.options.take(),
+                &["bias"],
+            )?)?;
+            let out = builder
+                .builder
+                .conv_transpose2d_with_options(a, b, opts)
                 .map_err(|e| op_err("convTranspose2d", e))?;
             Ok(single_result(builder, out)?)
         }
         "cumulativeSum" => {
             let input = operand_at(builder, &wire, 0)?;
-            let axis = wire.axis.ok_or_else(|| missing_field("cumulativeSum", "axis"))?;
+            let axis = wire
+                .axis
+                .ok_or_else(|| missing_field("cumulativeSum", "axis"))?;
             let opts: MLCumulativeSumOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.cumulative_sum_with_options(input, axis, opts)
+            let out = builder
+                .builder
+                .cumulative_sum_with_options(input, axis, opts)
                 .map_err(|e| op_err("cumulativeSum", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -123,7 +135,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.add_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .add_with_options(a, b, opts)
                 .map_err(|e| op_err("add", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -131,7 +145,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.sub_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .sub_with_options(a, b, opts)
                 .map_err(|e| op_err("sub", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -139,7 +155,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.mul_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .mul_with_options(a, b, opts)
                 .map_err(|e| op_err("mul", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -147,7 +165,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.div_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .div_with_options(a, b, opts)
                 .map_err(|e| op_err("div", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -155,7 +175,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.max_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .max_with_options(a, b, opts)
                 .map_err(|e| op_err("max", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -163,7 +185,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.min_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .min_with_options(a, b, opts)
                 .map_err(|e| op_err("min", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -171,7 +195,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.pow_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .pow_with_options(a, b, opts)
                 .map_err(|e| op_err("pow", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -179,7 +205,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.equal_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .equal_with_options(a, b, opts)
                 .map_err(|e| op_err("equal", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -187,7 +215,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.not_equal_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .not_equal_with_options(a, b, opts)
                 .map_err(|e| op_err("notEqual", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -195,7 +225,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.greater_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .greater_with_options(a, b, opts)
                 .map_err(|e| op_err("greater", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -203,7 +235,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.greater_or_equal_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .greater_or_equal_with_options(a, b, opts)
                 .map_err(|e| op_err("greaterOrEqual", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -211,7 +245,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.lesser_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .lesser_with_options(a, b, opts)
                 .map_err(|e| op_err("lesser", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -219,14 +255,18 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.lesser_or_equal_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .lesser_or_equal_with_options(a, b, opts)
                 .map_err(|e| op_err("lesserOrEqual", e))?;
             Ok(single_result(builder, out)?)
         }
         "logicalNot" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.logical_not_with_options(input, opts)
+            let out = builder
+                .builder
+                .logical_not_with_options(input, opts)
                 .map_err(|e| op_err("logicalNot", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -234,7 +274,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.logical_and_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .logical_and_with_options(a, b, opts)
                 .map_err(|e| op_err("logicalAnd", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -242,7 +284,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.logical_or_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .logical_or_with_options(a, b, opts)
                 .map_err(|e| op_err("logicalOr", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -250,126 +294,162 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.logical_xor_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .logical_xor_with_options(a, b, opts)
                 .map_err(|e| op_err("logicalXor", e))?;
             Ok(single_result(builder, out)?)
         }
         "isNaN" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.is_nan_with_options(input, opts)
+            let out = builder
+                .builder
+                .is_nan_with_options(input, opts)
                 .map_err(|e| op_err("isNaN", e))?;
             Ok(single_result(builder, out)?)
         }
         "isInfinite" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.is_infinite_with_options(input, opts)
+            let out = builder
+                .builder
+                .is_infinite_with_options(input, opts)
                 .map_err(|e| op_err("isInfinite", e))?;
             Ok(single_result(builder, out)?)
         }
         "abs" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.abs_with_options(input, opts)
+            let out = builder
+                .builder
+                .abs_with_options(input, opts)
                 .map_err(|e| op_err("abs", e))?;
             Ok(single_result(builder, out)?)
         }
         "ceil" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.ceil_with_options(input, opts)
+            let out = builder
+                .builder
+                .ceil_with_options(input, opts)
                 .map_err(|e| op_err("ceil", e))?;
             Ok(single_result(builder, out)?)
         }
         "cos" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.cos_with_options(input, opts)
+            let out = builder
+                .builder
+                .cos_with_options(input, opts)
                 .map_err(|e| op_err("cos", e))?;
             Ok(single_result(builder, out)?)
         }
         "erf" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.erf_with_options(input, opts)
+            let out = builder
+                .builder
+                .erf_with_options(input, opts)
                 .map_err(|e| op_err("erf", e))?;
             Ok(single_result(builder, out)?)
         }
         "exp" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.exp_with_options(input, opts)
+            let out = builder
+                .builder
+                .exp_with_options(input, opts)
                 .map_err(|e| op_err("exp", e))?;
             Ok(single_result(builder, out)?)
         }
         "floor" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.floor_with_options(input, opts)
+            let out = builder
+                .builder
+                .floor_with_options(input, opts)
                 .map_err(|e| op_err("floor", e))?;
             Ok(single_result(builder, out)?)
         }
         "identity" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.identity_with_options(input, opts)
+            let out = builder
+                .builder
+                .identity_with_options(input, opts)
                 .map_err(|e| op_err("identity", e))?;
             Ok(single_result(builder, out)?)
         }
         "log" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.log_with_options(input, opts)
+            let out = builder
+                .builder
+                .log_with_options(input, opts)
                 .map_err(|e| op_err("log", e))?;
             Ok(single_result(builder, out)?)
         }
         "neg" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.neg_with_options(input, opts)
+            let out = builder
+                .builder
+                .neg_with_options(input, opts)
                 .map_err(|e| op_err("neg", e))?;
             Ok(single_result(builder, out)?)
         }
         "reciprocal" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reciprocal_with_options(input, opts)
+            let out = builder
+                .builder
+                .reciprocal_with_options(input, opts)
                 .map_err(|e| op_err("reciprocal", e))?;
             Ok(single_result(builder, out)?)
         }
         "roundEven" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.round_even_with_options(input, opts)
+            let out = builder
+                .builder
+                .round_even_with_options(input, opts)
                 .map_err(|e| op_err("roundEven", e))?;
             Ok(single_result(builder, out)?)
         }
         "sin" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.sin_with_options(input, opts)
+            let out = builder
+                .builder
+                .sin_with_options(input, opts)
                 .map_err(|e| op_err("sin", e))?;
             Ok(single_result(builder, out)?)
         }
         "sign" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.sign_with_options(input, opts)
+            let out = builder
+                .builder
+                .sign_with_options(input, opts)
                 .map_err(|e| op_err("sign", e))?;
             Ok(single_result(builder, out)?)
         }
         "sqrt" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.sqrt_with_options(input, opts)
+            let out = builder
+                .builder
+                .sqrt_with_options(input, opts)
                 .map_err(|e| op_err("sqrt", e))?;
             Ok(single_result(builder, out)?)
         }
         "tan" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.tan_with_options(input, opts)
+            let out = builder
+                .builder
+                .tan_with_options(input, opts)
                 .map_err(|e| op_err("tan", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -378,7 +458,9 @@ pub fn dispatch_builder_op(
             let b = operand_at(builder, &wire, 1)?;
             let c = operand_at(builder, &wire, 2)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.dequantize_linear_with_options(a, b, Some(c), opts)
+            let out = builder
+                .builder
+                .dequantize_linear_with_options(a, b, Some(c), opts)
                 .map_err(|e| op_err("dequantizeLinear", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -387,24 +469,32 @@ pub fn dispatch_builder_op(
             let b = operand_at(builder, &wire, 1)?;
             let c = operand_at(builder, &wire, 2)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.quantize_linear_with_options(a, b, Some(c), opts)
+            let out = builder
+                .builder
+                .quantize_linear_with_options(a, b, Some(c), opts)
                 .map_err(|e| op_err("quantizeLinear", e))?;
             Ok(single_result(builder, out)?)
         }
         "elu" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLEluOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.elu_with_options(input, opts)
+            let out = builder
+                .builder
+                .elu_with_options(input, opts)
                 .map_err(|e| op_err("elu", e))?;
             Ok(single_result(builder, out)?)
         }
         "expand" => {
             let input = operand_at(builder, &wire, 0)?;
             let new_shape = parse_mldimensions(
-                wire.new_shape.as_ref().ok_or_else(|| missing_field("expand", "newShape"))?,
+                wire.new_shape
+                    .as_ref()
+                    .ok_or_else(|| missing_field("expand", "newShape"))?,
             )?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.expand_with_options(input, new_shape, opts)
+            let out = builder
+                .builder
+                .expand_with_options(input, new_shape, opts)
                 .map_err(|e| op_err("expand", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -412,7 +502,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLGatherOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.gather_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .gather_with_options(a, b, opts)
                 .map_err(|e| op_err("gather", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -420,7 +512,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLGatherOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.gather_elements_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .gather_elements_with_options(a, b, opts)
                 .map_err(|e| op_err("gatherElements", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -428,22 +522,32 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.gather_nd_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .gather_nd_with_options(a, b, opts)
                 .map_err(|e| op_err("gatherND", e))?;
             Ok(single_result(builder, out)?)
         }
         "gelu" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.gelu_with_options(input, opts)
+            let out = builder
+                .builder
+                .gelu_with_options(input, opts)
                 .map_err(|e| op_err("gelu", e))?;
             Ok(single_result(builder, out)?)
         }
         "gemm" => {
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
-            let opts: MLGemmOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["c"])?)?;
-            let out = builder.builder.gemm_with_options(a, b, opts)
+            let opts: MLGemmOptions = parse_options(resolve_option_operands(
+                builder,
+                wire.options.take(),
+                &["c"],
+            )?)?;
+            let out = builder
+                .builder
+                .gemm_with_options(a, b, opts)
                 .map_err(|e| op_err("gemm", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -455,17 +559,14 @@ pub fn dispatch_builder_op(
             let hidden_size = wire
                 .hidden_size
                 .ok_or_else(|| missing_field("gru", "hiddenSize"))?;
-            let opts: MLGruOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["bias", "recurrentBias", "initialHiddenState"])?)?;
+            let opts: MLGruOptions = parse_options(resolve_option_operands(
+                builder,
+                wire.options.take(),
+                &["bias", "recurrentBias", "initialHiddenState"],
+            )?)?;
             let outs = builder
                 .builder
-                .gru_with_options(
-                    input,
-                    weight,
-                    recurrent_weight,
-                    steps,
-                    hidden_size,
-                    opts,
-                )
+                .gru_with_options(input, weight, recurrent_weight, steps, hidden_size, opts)
                 .map_err(|e| op_err("gru", e))?;
             Ok(multi_result(builder, outs)?)
         }
@@ -477,7 +578,11 @@ pub fn dispatch_builder_op(
             let hidden_size = wire
                 .hidden_size
                 .ok_or_else(|| missing_field("gruCell", "hiddenSize"))?;
-            let opts: MLGruCellOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["bias", "recurrentBias"])?)?;
+            let opts: MLGruCellOptions = parse_options(resolve_option_operands(
+                builder,
+                wire.options.take(),
+                &["bias", "recurrentBias"],
+            )?)?;
             let out = builder
                 .builder
                 .gru_cell_with_options(
@@ -494,42 +599,62 @@ pub fn dispatch_builder_op(
         "hardSigmoid" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLHardSigmoidOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.hard_sigmoid_with_options(input, opts)
+            let out = builder
+                .builder
+                .hard_sigmoid_with_options(input, opts)
                 .map_err(|e| op_err("hardSigmoid", e))?;
             Ok(single_result(builder, out)?)
         }
         "hardSwish" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.hard_swish_with_options(input, opts)
+            let out = builder
+                .builder
+                .hard_swish_with_options(input, opts)
                 .map_err(|e| op_err("hardSwish", e))?;
             Ok(single_result(builder, out)?)
         }
         "instanceNormalization" => {
             let input = operand_at(builder, &wire, 0)?;
-            let opts: MLInstanceNormalizationOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["scale", "bias"])?)?;
-            let out = builder.builder.instance_normalization_with_options(input, opts)
+            let opts: MLInstanceNormalizationOptions = parse_options(resolve_option_operands(
+                builder,
+                wire.options.take(),
+                &["scale", "bias"],
+            )?)?;
+            let out = builder
+                .builder
+                .instance_normalization_with_options(input, opts)
                 .map_err(|e| op_err("instanceNormalization", e))?;
             Ok(single_result(builder, out)?)
         }
         "layerNormalization" => {
             let input = operand_at(builder, &wire, 0)?;
-            let opts: MLLayerNormalizationOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["scale", "bias"])?)?;
-            let out = builder.builder.layer_normalization_with_options(input, opts)
+            let opts: MLLayerNormalizationOptions = parse_options(resolve_option_operands(
+                builder,
+                wire.options.take(),
+                &["scale", "bias"],
+            )?)?;
+            let out = builder
+                .builder
+                .layer_normalization_with_options(input, opts)
                 .map_err(|e| op_err("layerNormalization", e))?;
             Ok(single_result(builder, out)?)
         }
         "leakyRelu" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLLeakyReluOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.leaky_relu_with_options(input, opts)
+            let out = builder
+                .builder
+                .leaky_relu_with_options(input, opts)
                 .map_err(|e| op_err("leakyRelu", e))?;
             Ok(single_result(builder, out)?)
         }
         "linear" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLLinearOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.linear_with_options(input, opts)
+            let out = builder
+                .builder
+                .linear_with_options(input, opts)
                 .map_err(|e| op_err("linear", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -541,17 +666,20 @@ pub fn dispatch_builder_op(
             let hidden_size = wire
                 .hidden_size
                 .ok_or_else(|| missing_field("lstm", "hiddenSize"))?;
-            let opts: MLLstmOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["bias", "recurrentBias", "peepholeWeight", "initialHiddenState", "initialCellState"])?)?;
+            let opts: MLLstmOptions = parse_options(resolve_option_operands(
+                builder,
+                wire.options.take(),
+                &[
+                    "bias",
+                    "recurrentBias",
+                    "peepholeWeight",
+                    "initialHiddenState",
+                    "initialCellState",
+                ],
+            )?)?;
             let outs = builder
                 .builder
-                .lstm_with_options(
-                    input,
-                    weight,
-                    recurrent_weight,
-                    steps,
-                    hidden_size,
-                    opts,
-                )
+                .lstm_with_options(input, weight, recurrent_weight, steps, hidden_size, opts)
                 .map_err(|e| op_err("lstm", e))?;
             Ok(multi_result(builder, outs)?)
         }
@@ -564,7 +692,11 @@ pub fn dispatch_builder_op(
             let hidden_size = wire
                 .hidden_size
                 .ok_or_else(|| missing_field("lstmCell", "hiddenSize"))?;
-            let opts: MLLstmCellOptions = parse_options(resolve_option_operands(builder, wire.options.take(), &["bias", "recurrentBias", "peepholeWeight"])?)?;
+            let opts: MLLstmCellOptions = parse_options(resolve_option_operands(
+                builder,
+                wire.options.take(),
+                &["bias", "recurrentBias", "peepholeWeight"],
+            )?)?;
             let outs = builder
                 .builder
                 .lstm_cell_with_options(
@@ -583,7 +715,9 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.matmul_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .matmul_with_options(a, b, opts)
                 .map_err(|e| op_err("matmul", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -598,28 +732,36 @@ pub fn dispatch_builder_op(
                 .clone()
                 .ok_or_else(|| missing_field("pad", "endingPadding"))?;
             let opts: MLPadOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.pad_with_options(input, beginning, ending, opts)
+            let out = builder
+                .builder
+                .pad_with_options(input, beginning, ending, opts)
                 .map_err(|e| op_err("pad", e))?;
             Ok(single_result(builder, out)?)
         }
         "averagePool2d" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLPool2dOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.average_pool2d_with_options(input, opts)
+            let out = builder
+                .builder
+                .average_pool2d_with_options(input, opts)
                 .map_err(|e| op_err("averagePool2d", e))?;
             Ok(single_result(builder, out)?)
         }
         "l2Pool2d" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLPool2dOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.l2_pool2d_with_options(input, opts)
+            let out = builder
+                .builder
+                .l2_pool2d_with_options(input, opts)
                 .map_err(|e| op_err("l2Pool2d", e))?;
             Ok(single_result(builder, out)?)
         }
         "maxPool2d" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLPool2dOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.max_pool2d_with_options(input, opts)
+            let out = builder
+                .builder
+                .max_pool2d_with_options(input, opts)
                 .map_err(|e| op_err("maxPool2d", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -627,108 +769,140 @@ pub fn dispatch_builder_op(
             let a = operand_at(builder, &wire, 0)?;
             let b = operand_at(builder, &wire, 1)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.prelu_with_options(a, b, opts)
+            let out = builder
+                .builder
+                .prelu_with_options(a, b, opts)
                 .map_err(|e| op_err("prelu", e))?;
             Ok(single_result(builder, out)?)
         }
         "reduceL1" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLReduceOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reduce_l1_with_options(input, opts)
+            let out = builder
+                .builder
+                .reduce_l1_with_options(input, opts)
                 .map_err(|e| op_err("reduceL1", e))?;
             Ok(single_result(builder, out)?)
         }
         "reduceL2" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLReduceOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reduce_l2_with_options(input, opts)
+            let out = builder
+                .builder
+                .reduce_l2_with_options(input, opts)
                 .map_err(|e| op_err("reduceL2", e))?;
             Ok(single_result(builder, out)?)
         }
         "reduceLogSum" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLReduceOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reduce_log_sum_with_options(input, opts)
+            let out = builder
+                .builder
+                .reduce_log_sum_with_options(input, opts)
                 .map_err(|e| op_err("reduceLogSum", e))?;
             Ok(single_result(builder, out)?)
         }
         "reduceLogSumExp" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLReduceOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reduce_log_sum_exp_with_options(input, opts)
+            let out = builder
+                .builder
+                .reduce_log_sum_exp_with_options(input, opts)
                 .map_err(|e| op_err("reduceLogSumExp", e))?;
             Ok(single_result(builder, out)?)
         }
         "reduceMax" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLReduceOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reduce_max_with_options(input, opts)
+            let out = builder
+                .builder
+                .reduce_max_with_options(input, opts)
                 .map_err(|e| op_err("reduceMax", e))?;
             Ok(single_result(builder, out)?)
         }
         "reduceMean" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLReduceOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reduce_mean_with_options(input, opts)
+            let out = builder
+                .builder
+                .reduce_mean_with_options(input, opts)
                 .map_err(|e| op_err("reduceMean", e))?;
             Ok(single_result(builder, out)?)
         }
         "reduceMin" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLReduceOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reduce_min_with_options(input, opts)
+            let out = builder
+                .builder
+                .reduce_min_with_options(input, opts)
                 .map_err(|e| op_err("reduceMin", e))?;
             Ok(single_result(builder, out)?)
         }
         "reduceProduct" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLReduceOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reduce_product_with_options(input, opts)
+            let out = builder
+                .builder
+                .reduce_product_with_options(input, opts)
                 .map_err(|e| op_err("reduceProduct", e))?;
             Ok(single_result(builder, out)?)
         }
         "reduceSum" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLReduceOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reduce_sum_with_options(input, opts)
+            let out = builder
+                .builder
+                .reduce_sum_with_options(input, opts)
                 .map_err(|e| op_err("reduceSum", e))?;
             Ok(single_result(builder, out)?)
         }
         "reduceSumSquare" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLReduceOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reduce_sum_square_with_options(input, opts)
+            let out = builder
+                .builder
+                .reduce_sum_square_with_options(input, opts)
                 .map_err(|e| op_err("reduceSumSquare", e))?;
             Ok(single_result(builder, out)?)
         }
         "relu" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.relu_with_options(input, opts)
+            let out = builder
+                .builder
+                .relu_with_options(input, opts)
                 .map_err(|e| op_err("relu", e))?;
             Ok(single_result(builder, out)?)
         }
         "resample2d" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLResample2dOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.resample2d_with_options(input, opts)
+            let out = builder
+                .builder
+                .resample2d_with_options(input, opts)
                 .map_err(|e| op_err("resample2d", e))?;
             Ok(single_result(builder, out)?)
         }
         "reshape" => {
             let input = operand_at(builder, &wire, 0)?;
             let new_shape = parse_mldimensions(
-                wire.new_shape.as_ref().ok_or_else(|| missing_field("reshape", "newShape"))?,
+                wire.new_shape
+                    .as_ref()
+                    .ok_or_else(|| missing_field("reshape", "newShape"))?,
             )?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reshape_with_options(input, new_shape, opts)
+            let out = builder
+                .builder
+                .reshape_with_options(input, new_shape, opts)
                 .map_err(|e| op_err("reshape", e))?;
             Ok(single_result(builder, out)?)
         }
         "reverse" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLReverseOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.reverse_with_options(input, opts)
+            let out = builder
+                .builder
+                .reverse_with_options(input, opts)
                 .map_err(|e| op_err("reverse", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -737,7 +911,9 @@ pub fn dispatch_builder_op(
             let b = operand_at(builder, &wire, 1)?;
             let c = operand_at(builder, &wire, 2)?;
             let opts: MLScatterOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.scatter_elements_with_options(a, b, c, opts)
+            let out = builder
+                .builder
+                .scatter_elements_with_options(a, b, c, opts)
                 .map_err(|e| op_err("scatterElements", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -746,25 +922,36 @@ pub fn dispatch_builder_op(
             let b = operand_at(builder, &wire, 1)?;
             let c = operand_at(builder, &wire, 2)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.scatter_nd_with_options(a, b, c, opts)
+            let out = builder
+                .builder
+                .scatter_nd_with_options(a, b, c, opts)
                 .map_err(|e| op_err("scatterND", e))?;
             Ok(single_result(builder, out)?)
         }
         "sigmoid" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.sigmoid_with_options(input, opts)
+            let out = builder
+                .builder
+                .sigmoid_with_options(input, opts)
                 .map_err(|e| op_err("sigmoid", e))?;
             Ok(single_result(builder, out)?)
         }
         "slice" => {
             let input = operand_at(builder, &wire, 0)?;
-            let starts = wire.starts.clone().ok_or_else(|| missing_field("slice", "starts"))?;
+            let starts = wire
+                .starts
+                .clone()
+                .ok_or_else(|| missing_field("slice", "starts"))?;
             let sizes = parse_mldimensions(
-                wire.sizes.as_ref().ok_or_else(|| missing_field("slice", "sizes"))?,
+                wire.sizes
+                    .as_ref()
+                    .ok_or_else(|| missing_field("slice", "sizes"))?,
             )?;
             let opts: MLSliceOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.slice_with_options(input, &starts, &sizes, opts)
+            let out = builder
+                .builder
+                .slice_with_options(input, &starts, &sizes, opts)
                 .map_err(|e| op_err("slice", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -772,21 +959,27 @@ pub fn dispatch_builder_op(
             let input = operand_at(builder, &wire, 0)?;
             let axis = wire.axis.ok_or_else(|| missing_field("softmax", "axis"))?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.softmax_with_options(input, axis, opts)
+            let out = builder
+                .builder
+                .softmax_with_options(input, axis, opts)
                 .map_err(|e| op_err("softmax", e))?;
             Ok(single_result(builder, out)?)
         }
         "softplus" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.softplus_with_options(input, opts)
+            let out = builder
+                .builder
+                .softplus_with_options(input, opts)
                 .map_err(|e| op_err("softplus", e))?;
             Ok(single_result(builder, out)?)
         }
         "softsign" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.softsign_with_options(input, opts)
+            let out = builder
+                .builder
+                .softsign_with_options(input, opts)
                 .map_err(|e| op_err("softsign", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -810,7 +1003,9 @@ pub fn dispatch_builder_op(
         "tanh" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.tanh_with_options(input, opts)
+            let out = builder
+                .builder
+                .tanh_with_options(input, opts)
                 .map_err(|e| op_err("tanh", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -821,21 +1016,27 @@ pub fn dispatch_builder_op(
                 .clone()
                 .ok_or_else(|| missing_field("tile", "repetitions"))?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.tile_with_options(input, repetitions, opts)
+            let out = builder
+                .builder
+                .tile_with_options(input, repetitions, opts)
                 .map_err(|e| op_err("tile", e))?;
             Ok(single_result(builder, out)?)
         }
         "transpose" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLTransposeOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.transpose_with_options(input, opts)
+            let out = builder
+                .builder
+                .transpose_with_options(input, opts)
                 .map_err(|e| op_err("transpose", e))?;
             Ok(single_result(builder, out)?)
         }
         "triangular" => {
             let input = operand_at(builder, &wire, 0)?;
             let opts: MLTriangularOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.triangular_with_options(input, opts)
+            let out = builder
+                .builder
+                .triangular_with_options(input, opts)
                 .map_err(|e| op_err("triangular", e))?;
             Ok(single_result(builder, out)?)
         }
@@ -844,7 +1045,9 @@ pub fn dispatch_builder_op(
             let b = operand_at(builder, &wire, 1)?;
             let c = operand_at(builder, &wire, 2)?;
             let opts: MLOperatorOptions = parse_options(wire.options.take())?;
-            let out = builder.builder.where_with_options(a, b, c, opts)
+            let out = builder
+                .builder
+                .where_with_options(a, b, c, opts)
                 .map_err(|e| op_err("where", e))?;
             Ok(single_result(builder, out)?)
         }

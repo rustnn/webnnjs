@@ -9,8 +9,8 @@ use once_cell::sync::Lazy;
 use rustnn::graph::{get_static_or_max_size, DataType, GraphInfo};
 use rustnn::loader::load_graph_from_path;
 use rustnn::mlcontext::{
-    MLContext, MLContextOptions, MLGraph, MLGraphBuilder, MLOperand, MLOperandDescriptor,
-    MLPowerPreference, MLTensor, MLTensorDescriptor,
+    MLContext, MLContextOptions, MLGraph, MLGraphBuilder, MLNamedOperands, MLNamedTensors,
+    MLOperand, MLOperandDescriptor, MLPowerPreference, MLTensor, MLTensorDescriptor,
 };
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::validator::{ContextProperties, GraphValidator, ValidationArtifacts};
@@ -410,17 +410,10 @@ pub(crate) fn register_operand(
     handle
 }
 
-pub(crate) fn register_operand_inferred(
-    builder: &mut BuilderEntry,
-    operand: MLOperand,
-) -> u32 {
+pub(crate) fn register_operand_inferred(builder: &mut BuilderEntry, operand: MLOperand) -> u32 {
     let rustnn_id = builder.next_rustnn_operand_id;
     builder.next_rustnn_operand_id = builder.next_rustnn_operand_id.saturating_add(1);
-    register_operand(
-        builder,
-        operand,
-        OperandWireMeta { rustnn_id },
-    )
+    register_operand(builder, operand, OperandWireMeta { rustnn_id })
 }
 
 fn write_tensor_bytes(context: &mut MLContext, tensor: &MLTensor, data: &[u8]) -> Result<()> {
@@ -580,8 +573,10 @@ pub(crate) fn bytes_to_pod<T: bytemuck::Pod>(input: &[u8]) -> Result<Vec<T>> {
 pub fn create_context(options_json: String) -> Result<u32> {
     let options: ContextOptionsWire = parse_json(&options_json, "createContext options")?;
     let accelerated = options.accelerated.unwrap_or(true);
-    let rustnn_options =
-        MLContextOptions::new(parse_power_preference(options.power_preference.as_deref()), accelerated);
+    let rustnn_options = MLContextOptions::new(
+        parse_power_preference(options.power_preference.as_deref()),
+        accelerated,
+    );
 
     let context = MLContext::create(&rustnn_options).map_err(|e| {
         nerr(
@@ -656,13 +651,8 @@ pub fn destroy_graph_builder(builder_handle: u32) -> Result<()> {
 }
 
 #[napi(js_name = "builderInput")]
-pub fn builder_input(
-    builder_handle: u32,
-    name: String,
-    descriptor_json: String,
-) -> Result<u32> {
-    let descriptor: TensorDescriptorWire =
-        parse_json(&descriptor_json, "builderInput descriptor")?;
+pub fn builder_input(builder_handle: u32, name: String, descriptor_json: String) -> Result<u32> {
+    let descriptor: TensorDescriptorWire = parse_json(&descriptor_json, "builderInput descriptor")?;
     let operand_desc = operand_descriptor(&descriptor)?;
 
     with_builder(builder_handle, |builder| {
@@ -706,8 +696,7 @@ pub fn builder_constant_buffer(
         parse_json(&descriptor_json, "builderConstantBuffer descriptor")?;
 
     with_builder(builder_handle, |builder| {
-        let result =
-            builder_dispatch::constant_from_buffer(builder, &descriptor, data.as_ref())?;
+        let result = builder_dispatch::constant_from_buffer(builder, &descriptor, data.as_ref())?;
         serde_json::to_string(&result).map_err(|e| {
             nerr(
                 Status::GenericFailure,
@@ -734,7 +723,7 @@ pub async fn builder_build(
                 )
             })?;
 
-            let mut rust_outputs = HashMap::new();
+            let mut rust_outputs = MLNamedOperands::new();
             for (name, operand_handle) in &outputs_map {
                 let (operand, _) = builder_entry.operands.get(operand_handle).ok_or_else(|| {
                     nerr(
@@ -827,14 +816,21 @@ pub fn rustnn_resize_tensor(
 ) -> Result<()> {
     let shape: Vec<u64> = parse_json(&shape_json, "rustnnResizeTensor shape")?;
     with_context(context_handle, |session| {
-        let tensor = session
-            .tensors
-            .get_mut(&tensor_handle)
-            .ok_or_else(|| nerr(Status::InvalidArg, format!("unknown tensor handle: {tensor_handle}")))?;
+        let tensor = session.tensors.get_mut(&tensor_handle).ok_or_else(|| {
+            nerr(
+                Status::InvalidArg,
+                format!("unknown tensor handle: {tensor_handle}"),
+            )
+        })?;
         session
             .context
             .rustnn_resize_tensor(tensor, &shape)
-            .map_err(|e| nerr(Status::GenericFailure, format!("rustnn_resize_tensor failed: {e}")))
+            .map_err(|e| {
+                nerr(
+                    Status::GenericFailure,
+                    format!("rustnn_resize_tensor failed: {e}"),
+                )
+            })
     })
 }
 
@@ -846,10 +842,12 @@ pub fn rustnn_set_tensor_capacity(
 ) -> Result<()> {
     let shape: Vec<u64> = parse_json(&shape_json, "rustnnSetTensorCapacity shape")?;
     with_context(context_handle, |session| {
-        let tensor = session
-            .tensors
-            .get_mut(&tensor_handle)
-            .ok_or_else(|| nerr(Status::InvalidArg, format!("unknown tensor handle: {tensor_handle}")))?;
+        let tensor = session.tensors.get_mut(&tensor_handle).ok_or_else(|| {
+            nerr(
+                Status::InvalidArg,
+                format!("unknown tensor handle: {tensor_handle}"),
+            )
+        })?;
         session
             .context
             .rustnn_set_tensor_capacity(tensor, &shape)
@@ -880,7 +878,7 @@ pub fn dispatch(
             )
         })?;
 
-        let mut inputs = HashMap::new();
+        let mut inputs = MLNamedTensors::new();
         for (name, tensor_handle) in &inputs_map {
             let tensor = session.tensors.get(tensor_handle).ok_or_else(|| {
                 nerr(
@@ -891,7 +889,7 @@ pub fn dispatch(
             inputs.insert(name.as_str(), tensor);
         }
 
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedTensors::new();
         for (name, tensor_handle) in &outputs_map {
             let tensor = session.tensors.get(tensor_handle).ok_or_else(|| {
                 nerr(
@@ -918,7 +916,10 @@ pub fn destroy_graph(context_handle: u32, graph_handle: u32) -> Result<()> {
 }
 
 #[napi(js_name = "loadWebnnModel")]
-pub async fn load_webnn_model(context_handle: u32, path_or_dir: String) -> Result<NativeModelLoadResult> {
+pub async fn load_webnn_model(
+    context_handle: u32,
+    path_or_dir: String,
+) -> Result<NativeModelLoadResult> {
     tokio::task::spawn_blocking(move || {
         let resolved_path = find_webnn_graph_path(Path::new(&path_or_dir))?;
         let graph_info = load_graph_from_path(&resolved_path).map_err(|e| {
@@ -937,7 +938,12 @@ pub async fn load_webnn_model(context_handle: u32, path_or_dir: String) -> Resul
         };
         let artifacts = GraphValidator::new(&graph_info, context_props)
             .validate()
-            .map_err(|e| nerr(Status::GenericFailure, format!("graph validation failed: {e}")))?;
+            .map_err(|e| {
+                nerr(
+                    Status::GenericFailure,
+                    format!("graph validation failed: {e}"),
+                )
+            })?;
         let meta = meta_from_artifacts(&artifacts, &resolved_path);
         let (input_names, output_names) = io_names_from_graph_info(&graph_info);
         let mut meta = meta;

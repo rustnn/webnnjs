@@ -10,8 +10,8 @@ use crate::{
     nerr, operand_descriptor, register_operand_inferred, BuilderEntry, TensorDescriptorWire,
 };
 
-pub(crate) use crate::parse_data_type;
 pub use crate::generated::builder_ops::dispatch_builder_op;
+pub(crate) use crate::parse_data_type;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -146,7 +146,12 @@ pub fn operand_at(
         .operands
         .get(&handle)
         .map(|(operand, _)| *operand)
-        .ok_or_else(|| nerr(Status::InvalidArg, format!("unknown operand handle {handle}")))
+        .ok_or_else(|| {
+            nerr(
+                Status::InvalidArg,
+                format!("unknown operand handle {handle}"),
+            )
+        })
 }
 
 pub fn operands_all(builder: &BuilderEntry, wire: &BuilderInvokeWire) -> Result<Vec<MLOperand>> {
@@ -157,15 +162,17 @@ pub fn operands_all(builder: &BuilderEntry, wire: &BuilderInvokeWire) -> Result<
                 .operands
                 .get(handle)
                 .map(|(operand, _)| *operand)
-                .ok_or_else(|| nerr(Status::InvalidArg, format!("unknown operand handle {handle}")))
+                .ok_or_else(|| {
+                    nerr(
+                        Status::InvalidArg,
+                        format!("unknown operand handle {handle}"),
+                    )
+                })
         })
         .collect()
 }
 
-fn infer_operand_wire(
-    builder: &mut BuilderEntry,
-    operand: MLOperand,
-) -> Result<InvokeOperandWire> {
+fn infer_operand_wire(builder: &mut BuilderEntry, operand: MLOperand) -> Result<InvokeOperandWire> {
     let shape = builder
         .builder
         .rustnn_operand_shape(operand)
@@ -229,9 +236,7 @@ pub fn split_equal_parts(
     if dim % parts as u64 != 0 {
         return Err(nerr(
             Status::InvalidArg,
-            format!(
-                "MLGraphBuilder.split: axis size {dim} is not evenly divisible by {parts}"
-            ),
+            format!("MLGraphBuilder.split: axis size {dim} is not evenly divisible by {parts}"),
         ));
     }
 
@@ -306,12 +311,10 @@ pub fn constant_from_buffer(
                 .constant_from_slice(&operand_desc, &values)
                 .map_err(|e| op_err("constant", e))?
         }
-        "int4" | "uint4" => {
-            builder
-                .builder
-                .constant_from_slice(&operand_desc, data)
-                .map_err(|e| op_err("constant", e))?
-        }
+        "int4" | "uint4" => builder
+            .builder
+            .constant_from_slice(&operand_desc, data)
+            .map_err(|e| op_err("constant", e))?,
         other => {
             return Err(nerr(
                 Status::InvalidArg,
