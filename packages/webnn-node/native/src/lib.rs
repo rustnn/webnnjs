@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use napi::bindgen_prelude::Buffer;
 use napi::{Error, Result, Status};
 use napi_derive::napi;
-use once_cell::sync::Lazy;
 use rustnn::graph::{get_static_or_max_size, DataType, GraphInfo};
 use rustnn::loader::load_graph_from_path;
 use rustnn::mlcontext::{
@@ -100,12 +99,7 @@ impl Store {
     }
 }
 
-// MLContext/MLGraphBuilder use trait objects that are not auto-Send. Node calls into
-// this addon are serialized through the mutex; ORT dispatch stays on the calling thread.
-unsafe impl Send for Store {}
-unsafe impl Sync for Store {}
-
-static STATE: Lazy<Mutex<Store>> = Lazy::new(|| Mutex::new(Store::new()));
+static STATE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store::new()));
 
 fn nerr(status: Status, message: impl Into<String>) -> Error {
     Error::new(status, message.into())
@@ -340,10 +334,8 @@ fn find_webnn_graph_path(path_or_dir: &Path) -> Result<PathBuf> {
 
         match ext.as_deref() {
             Some("webnn") => webnn_files.push(path.to_path_buf()),
-            Some("json") => {
-                if looks_like_graph_json(path) {
-                    json_files.push(path.to_path_buf());
-                }
+            Some("json") if looks_like_graph_json(path) => {
+                json_files.push(path.to_path_buf());
             }
             _ => {}
         }
@@ -494,35 +486,35 @@ fn read_tensor_bytes(context: &mut MLContext, tensor: &MLTensor) -> Result<Vec<u
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(bytemuck::cast_slice(&values).to_vec());
+            Ok(bytemuck::cast_slice(&values).to_vec())
         }
         MLOperandDataType::Int64 => {
             let mut values = vec![0i64; logical / 8];
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(bytemuck::cast_slice(&values).to_vec());
+            Ok(bytemuck::cast_slice(&values).to_vec())
         }
         MLOperandDataType::Int32 => {
             let mut values = vec![0i32; logical / 4];
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(bytemuck::cast_slice(&values).to_vec());
+            Ok(bytemuck::cast_slice(&values).to_vec())
         }
         MLOperandDataType::Uint32 => {
             let mut values = vec![0u32; logical / 4];
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(bytemuck::cast_slice(&values).to_vec());
+            Ok(bytemuck::cast_slice(&values).to_vec())
         }
         MLOperandDataType::Uint64 => {
             let mut values = vec![0u64; logical / 8];
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(bytemuck::cast_slice(&values).to_vec());
+            Ok(bytemuck::cast_slice(&values).to_vec())
         }
         MLOperandDataType::Int8 => {
             let mut values = vec![0i8; logical];
@@ -536,7 +528,7 @@ fn read_tensor_bytes(context: &mut MLContext, tensor: &MLTensor) -> Result<Vec<u
             context
                 .read_tensor(tensor, &mut values)
                 .map_err(|e| nerr(Status::GenericFailure, format!("readTensor failed: {e}")))?;
-            return Ok(values);
+            Ok(values)
         }
         MLOperandDataType::Int4 | MLOperandDataType::Uint4 => {
             let mut values = vec![0u8; logical];
@@ -556,7 +548,7 @@ fn read_tensor_bytes(context: &mut MLContext, tensor: &MLTensor) -> Result<Vec<u
 }
 
 pub(crate) fn bytes_to_pod<T: bytemuck::Pod>(input: &[u8]) -> Result<Vec<T>> {
-    if input.len() % std::mem::size_of::<T>() != 0 {
+    if !input.len().is_multiple_of(std::mem::size_of::<T>()) {
         return Err(nerr(
             Status::InvalidArg,
             format!(
